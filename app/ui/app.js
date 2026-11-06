@@ -291,20 +291,57 @@ $("#layout-reset").addEventListener("click", () => {
 
 // ------------------------------------------------------------------ machines
 
+// Machine list filter (kept across restarts).
+const machineFilter = { text: "", show: localStorage.getItem("machineFilter") || "all" };
+function machineMatches(p) {
+  if (machineFilter.show === "paired" && !p.trusted) return false;
+  if (machineFilter.show === "unpaired" && p.trusted) return false;
+  const q = machineFilter.text.trim().toLowerCase();
+  if (!q) return true;
+  return [p.name, p.addr, p.os ? OS_LABEL[p.os] : "", p.fingerprint].some((v) => v && v.toLowerCase().includes(q));
+}
+$("#machine-search").addEventListener("input", (e) => {
+  machineFilter.text = e.target.value;
+  sigs.machines = null;
+  render();
+});
+for (const b of document.querySelectorAll("#machine-filter button")) {
+  b.addEventListener("click", () => {
+    machineFilter.show = b.dataset.f;
+    localStorage.setItem("machineFilter", b.dataset.f);
+    sigs.machines = null;
+    render();
+  });
+}
+
 function renderMachines() {
   const pending = state.peers.filter((p) => !p.trusted && p.connected).length;
   const badge = $("#pending-badge");
   badge.textContent = pending;
   badge.classList.toggle("hidden", !pending);
 
-  if (sameSig("machines", [state.peers, state.manual_peers, state.controlling, state.controlled_by])) return;
+  if (sameSig("machines", [state.peers, state.manual_peers, state.blocked, state.controlling, state.controlled_by])) return;
+  for (const b of document.querySelectorAll("#machine-filter button")) {
+    b.classList.toggle("active", b.dataset.f === machineFilter.show);
+  }
   const box = $("#machines");
   box.replaceChildren();
+  // Machines in the middle of pairing always stay visible.
+  const shown = state.peers.filter((p) => p.pairing || machineMatches(p));
+  const filtered = machineFilter.text.trim() || machineFilter.show !== "all";
+  $("#machine-count").textContent = filtered ? `${shown.length} of ${state.peers.length}` : `${state.peers.length} machine${state.peers.length === 1 ? "" : "s"}`;
   if (!state.peers.length) {
     box.append(el("div", { class: "empty" },
       "No other machines found yet. Start Shared Mouse & Keyboard on your other computers — they should appear here within a few seconds."));
+  } else if (!shown.length) {
+    box.append(el("div", { class: "empty" }, "No machines match the filter."));
   }
-  for (const p of state.peers) box.append(machineCard(p));
+  for (const p of shown) box.append(machineCard(p));
+
+  $("#blocked-card").classList.toggle("hidden", !state.blocked.length);
+  $("#blocked-list").replaceChildren(...state.blocked.map((b) =>
+    el("span", { class: "chip" }, `${b.name}${b.online ? "" : " (offline)"}`,
+      el("button", { class: "unblock", title: "Unblock", onclick: () => call("unblock", { nodeId: b.node_id }) }, "Unblock"))));
 
   const chips = $("#manual-list");
   chips.replaceChildren();
@@ -347,8 +384,17 @@ function machineCard(p) {
       el("p", {}, `Enter the 6-digit code now shown on ${p.name}:`), form,
       pairing.error ? el("div", { class: "err" }, pairing.error) : null);
     setTimeout(() => input.focus(), 0);
+  } else if (pairing && pairing.kind === "declined") {
+    extra = el("div", { class: "code-entry" },
+      el("div", { class: "err" }, `${p.name} is not accepting pairing requests. Pair from ${p.name} instead, or allow requests in its Settings.`),
+      el("button", { class: "btn small", onclick: () => call("cancel_pair", { nodeId: p.node_id }) }, "OK"));
   } else if (!p.trusted && p.connected) {
     buttons.append(el("button", { class: "btn primary", onclick: () => call("pair", { nodeId: p.node_id }) }, "Pair"));
+    buttons.append(el("button", {
+      class: "btn subtle",
+      title: "Hide this machine and decline its pairing requests",
+      onclick: () => confirmInline(buttons, `Block ${p.name}?`, () => call("block", { nodeId: p.node_id })),
+    }, "Block"));
   }
   if (p.trusted) {
     buttons.append(el("button", {
@@ -396,6 +442,9 @@ function renderPairModal() {
   $("#pair-modal-code").textContent = showing.pairing.code;
   modal.classList.remove("hidden");
 }
+$("#pair-modal-block").addEventListener("click", () => {
+  if (modalNode) call("block", { nodeId: modalNode });
+});
 $("#pair-modal-cancel").addEventListener("click", () => {
   if (modalNode) call("cancel_pair", { nodeId: modalNode });
 });
@@ -452,6 +501,7 @@ function collectSettings() {
   const f = settingsForm.elements;
   const num = (n, d) => (Number.isFinite(parseFloat(f[n].value)) ? parseFloat(f[n].value) : d);
   return {
+    accept_pairing: f.accept_pairing.checked,
     clipboard_enabled: f.clipboard_enabled.checked,
     clipboard_files_enabled: f.clipboard_files_enabled.checked,
     swap_cmd_ctrl: f.swap_cmd_ctrl.checked,

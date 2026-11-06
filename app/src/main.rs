@@ -57,6 +57,16 @@ fn unpair(app: State<App>, node_id: Uuid) {
 }
 
 #[tauri::command]
+fn block(app: State<App>, node_id: Uuid) {
+    app.engine.send(Command::Block(node_id));
+}
+
+#[tauri::command]
+fn unblock(app: State<App>, node_id: Uuid) {
+    app.engine.send(Command::Unblock(node_id));
+}
+
+#[tauri::command]
 fn connect(app: State<App>, addr: String) {
     app.engine.send(Command::Connect(addr));
 }
@@ -372,6 +382,8 @@ fn main() {
             submit_code,
             cancel_pair,
             unpair,
+            block,
+            unblock,
             connect,
             remove_manual_peer,
             set_settings,

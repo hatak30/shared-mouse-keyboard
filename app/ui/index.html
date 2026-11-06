@@ -73,7 +73,21 @@
             Pair a machine once to let it share input and clipboard with this one.</p>
         </div>
       </div>
+      <div class="filter-bar">
+        <input id="machine-search" type="search" placeholder="Filter by name, address or system…" autocomplete="off" spellcheck="false" />
+        <div class="seg" id="machine-filter" role="group" aria-label="Show">
+          <button type="button" data-f="all">All</button>
+          <button type="button" data-f="paired">Paired</button>
+          <button type="button" data-f="unpaired">Not paired</button>
+        </div>
+        <span id="machine-count" class="muted small"></span>
+      </div>
       <div id="machines" class="cards"></div>
+      <div id="blocked-card" class="card add hidden">
+        <h3>Blocked machines</h3>
+        <p class="muted">Their pairing requests are declined automatically and they are hidden from the list above.</p>
+        <div id="blocked-list" class="chips"></div>
+      </div>
       <div class="card add">
         <h3>Add by address</h3>
         <p class="muted">If a machine does not show up (for example on networks that block broadcast), enter its IP address or host name.</p>
@@ -118,6 +132,12 @@
             <p class="muted small">Lets your other computers control this Mac's login window after a restart or log out.
               Installs a small system helper — macOS asks for an administrator password.</p>
           </div>
+        </fieldset>
+        <fieldset>
+          <legend>Pairing</legend>
+          <label class="check"><input type="checkbox" name="accept_pairing" /> Allow other machines to send pairing requests</label>
+          <p class="muted small">Turn off on busy networks. You can still pair by clicking <em>Pair</em> on this machine;
+            to silence one particular machine, use <em>Block</em> on it instead.</p>
         </fieldset>
         <fieldset>
           <legend>Clipboard</legend>
@@ -167,7 +187,10 @@
       <p>Type this code on <span id="pair-modal-name2"></span>:</p>
       <div id="pair-modal-code" class="bigcode"></div>
       <p class="muted small">Only accept if you started the pairing yourself. The code is different if someone intercepts the connection.</p>
-      <div class="actions end"><button id="pair-modal-cancel" class="btn">Reject</button></div>
+      <div class="actions end">
+        <button id="pair-modal-block" class="btn danger" title="Reject and decline all future requests from this machine">Block machine</button>
+        <button id="pair-modal-cancel" class="btn">Reject</button>
+      </div>
     </div>
   </div>
 

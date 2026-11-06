@@ -16,7 +16,7 @@ use tokio_rustls::TlsConnector;
 use uuid::Uuid;
 
 use crate::clipboard::{Clip, ClipboardHandle, ReadOptions};
-use crate::config::{Config, Settings, TrustedPeer};
+use crate::config::{BlockedPeer, Config, Settings, TrustedPeer};
 use crate::discovery::{self, Discovered};
 use crate::input::{self, CaptureShared, CapturedEvent, Injector};
 use crate::keymap::{self, ev};
@@ -28,6 +28,8 @@ use crate::tls::{pairing_code, Identity};
 use crate::transfer::{self, FileOffer, LocalOffer};
 
 const MAX_PAIR_ATTEMPTS: u32 = 3;
+/// PairResult reason when a machine doesn't accept pairing requests.
+const DECLINED: &str = "declined";
 
 // ---------------------------------------------------------------- UI state
 
@@ -38,6 +40,8 @@ pub enum UiPairing {
     EnterCode { error: Option<String> },
     /// The peer asked to pair; show this code to the user.
     ShowCode { code: String },
+    /// We asked, but the peer doesn't accept pairing requests.
+    Declined,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +55,13 @@ pub struct UiPeer {
     pub fingerprint: String,
     pub screen: Option<Rect>,
     pub pairing: Option<UiPairing>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UiBlocked {
+    pub node_id: Uuid,
+    pub name: String,
+    pub online: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +81,8 @@ pub struct UiState {
     pub layout: Layout,
     pub settings: Settings,
     pub manual_peers: Vec<String>,
+    /// Machines whose pairing requests are ignored (not listed in `peers`).
+    pub blocked: Vec<UiBlocked>,
     /// Name of the machine currently receiving our input, if not local.
     pub controlling: Option<String>,
     /// Name of the machine currently sending us input.
@@ -125,6 +138,9 @@ pub enum Command {
     SubmitCode(Uuid, String),
     CancelPair(Uuid),
     Unpair(Uuid),
+    /// Reject this machine's pairing requests from now on (unpairs it too).
+    Block(Uuid),
+    Unblock(Uuid),
     Connect(String),
     RemoveManualPeer(String),
     SetSettings(Settings),
@@ -209,6 +225,8 @@ enum PairState {
     Submitted,
     /// Peer initiated; we display the code.
     Showing { attempts: u32 },
+    /// We asked, but the peer doesn't accept pairing requests.
+    Declined,
 }
 
 struct Peer {
@@ -363,6 +381,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         layout: cfg.layout.clone(),
         settings: cfg.settings.clone(),
         manual_peers: cfg.manual_peers.clone(),
+        blocked: Vec::new(),
         controlling: None,
         controlled_by: None,
         permissions: permissions::check(),
@@ -843,6 +862,18 @@ impl Engine {
     // ------------------------------------------------------------ pairing
 
     fn on_pair_request(&mut self, conn: ConnId) {
+        let accept = self.cfg.settings.accept_pairing;
+        let Some(p) = self.peers.get(&conn) else { return };
+        let blocked = p.node_id().is_none_or(|n| self.cfg.is_blocked(n, &p.fingerprint));
+        if blocked || !accept {
+            // Same answer either way, so a blocked machine can't tell.
+            p.send(Message::PairResult { ok: false, reason: DECLINED.into() });
+            if !blocked {
+                let name = p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+                self.log(format!("Declined pairing request from {name} (pairing requests are turned off)"));
+            }
+            return;
+        }
         let Some(p) = self.peers.get_mut(&conn) else { return };
         p.pairing = PairState::Showing { attempts: 0 };
         let name = p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default();
@@ -881,6 +912,11 @@ impl Engine {
                 let name = p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default();
                 self.log(format!("Pairing with {name} was cancelled"));
             }
+            return;
+        }
+        if !ok && reason == DECLINED && matches!(p.pairing, PairState::Initiated { .. }) {
+            p.pairing = PairState::Declined;
+            self.dirty = true;
             return;
         }
         if !matches!(p.pairing, PairState::Submitted) {
@@ -1012,6 +1048,38 @@ impl Engine {
                 self.save();
                 self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
                 self.log(format!("Removed {name}"));
+            }
+            Command::Block(node) => {
+                let Some((name, fingerprint)) = self
+                    .peer_by_node(node)
+                    .map(|(_, p)| (p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default(), p.fingerprint.clone()))
+                    .or_else(|| self.cfg.trusted.iter().find(|t| t.node_id == node).map(|t| (t.name.clone(), t.fingerprint.clone())))
+                else {
+                    return;
+                };
+                if self.cfg.trusted.iter().any(|t| t.node_id == node) {
+                    self.on_command(Command::Unpair(node));
+                }
+                if let Some((conn, _)) = self.peer_by_node(node) {
+                    let p = self.peers.get_mut(&conn).unwrap();
+                    if !matches!(p.pairing, PairState::None) {
+                        p.pairing = PairState::None;
+                        p.send(Message::PairResult { ok: false, reason: "cancelled".into() });
+                    }
+                }
+                self.cfg.blocked.retain(|b| b.node_id != node);
+                self.cfg.blocked.push(BlockedPeer { node_id: node, name: name.clone(), fingerprint });
+                self.save();
+                self.log(format!("Blocked {name}: its pairing requests will be ignored"));
+                self.dirty = true;
+            }
+            Command::Unblock(node) => {
+                if let Some(i) = self.cfg.blocked.iter().position(|b| b.node_id == node) {
+                    let b = self.cfg.blocked.remove(i);
+                    self.save();
+                    self.log(format!("Unblocked {}", b.name));
+                }
+                self.dirty = true;
             }
             Command::Connect(addr) => {
                 let addr = addr.trim().to_string();
@@ -1695,10 +1763,14 @@ impl Engine {
         let mut peers: Vec<UiPeer> = Vec::new();
         for p in self.peers.values() {
             let Some(h) = &p.hello else { continue };
+            if self.cfg.is_blocked(h.node_id, &p.fingerprint) {
+                continue;
+            }
             let pairing = match &p.pairing {
                 PairState::None => None,
                 PairState::Initiated { error, .. } => Some(UiPairing::EnterCode { error: error.clone() }),
                 PairState::Submitted => Some(UiPairing::EnterCode { error: None }),
+                PairState::Declined => Some(UiPairing::Declined),
                 PairState::Showing { .. } => Some(UiPairing::ShowCode {
                     code: pairing_code(&self.identity.fingerprint, &p.fingerprint),
                 }),
@@ -1731,6 +1803,16 @@ impl Engine {
             }
         }
         peers.sort_by_key(|p| p.name.to_lowercase());
+        let blocked = self
+            .cfg
+            .blocked
+            .iter()
+            .map(|b| UiBlocked {
+                node_id: b.node_id,
+                name: b.name.clone(),
+                online: self.peers.values().any(|p| p.node_id() == Some(b.node_id) || p.fingerprint == b.fingerprint),
+            })
+            .collect();
         let controlling = match &self.control {
             Control::Local => None,
             Control::Remote { node, .. } => Some(self.node_name(*node)),
@@ -1748,6 +1830,7 @@ impl Engine {
             st.layout = self.cfg.layout.clone();
             st.settings = self.cfg.settings.clone();
             st.manual_peers = self.cfg.manual_peers.clone();
+            st.blocked = blocked;
             st.controlling = controlling;
             st.controlled_by = controlled_by;
             st.permissions = permissions::check();

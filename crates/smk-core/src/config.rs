@@ -20,9 +20,21 @@ pub struct TrustedPeer {
     pub last_addr: Option<String>,
 }
 
+/// A machine whose pairing requests are ignored and that is hidden from the
+/// list. Matched by certificate fingerprint or node id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockedPeer {
+    pub node_id: Uuid,
+    pub name: String,
+    pub fingerprint: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Let other machines ask to pair with this one. When off, only pairing
+    /// started from this machine works.
+    pub accept_pairing: bool,
     pub clipboard_enabled: bool,
     pub clipboard_files_enabled: bool,
     /// When controlling a Windows/Linux machine from a Mac (or vice versa),
@@ -42,6 +54,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            accept_pairing: true,
             clipboard_enabled: true,
             clipboard_files_enabled: true,
             swap_cmd_ctrl: true,
@@ -63,6 +76,8 @@ pub struct Config {
     pub layout: Layout,
     /// Addresses (host or host:port) to connect to in addition to discovery.
     pub manual_peers: Vec<String>,
+    /// Machines whose pairing requests are ignored.
+    pub blocked: Vec<BlockedPeer>,
     pub settings: Settings,
     /// Directory this config was loaded from (not serialized).
     #[serde(skip)]
@@ -87,6 +102,7 @@ impl Default for Config {
             trusted: Vec::new(),
             layout: Layout::default(),
             manual_peers: Vec::new(),
+            blocked: Vec::new(),
             settings: Settings::default(),
             dir: Self::default_dir(),
             read_only: false,
@@ -145,5 +161,9 @@ impl Config {
 
     pub fn trusted_by_fingerprint(&self, fp: &str) -> Option<&TrustedPeer> {
         self.trusted.iter().find(|t| t.fingerprint == fp)
+    }
+
+    pub fn is_blocked(&self, node_id: Uuid, fingerprint: &str) -> bool {
+        self.blocked.iter().any(|b| b.node_id == node_id || b.fingerprint == fingerprint)
     }
 }

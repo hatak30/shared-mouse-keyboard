@@ -178,6 +178,50 @@ async fn rejecting_pairing_clears_both_sides() {
     assert!(!peer(&b.state(), "alpha").unwrap().trusted);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocked_or_closed_machines_decline_pairing() {
+    let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
+    let (a, _ra) = engine(25851, screen).await;
+    let (b, _rb) = engine(25852, screen).await;
+    a.send(Command::SetName("alpha".into()));
+    b.send(Command::SetName("beta".into()));
+    a.send(Command::Connect("127.0.0.1:25852".into()));
+    wait_until("connected", || {
+        peer(&a.state(), "beta").is_some_and(|p| p.connected) && peer(&b.state(), "alpha").is_some_and(|p| p.connected)
+    })
+    .await;
+    let (a_id, b_id) = (a.state().me.node_id, b.state().me.node_id);
+    let declined = |s: &UiState| peer(s, "beta").is_some_and(|p| matches!(p.pairing, Some(UiPairing::Declined)));
+
+    // B blocks A: A's request is declined, B never shows a code, and A
+    // disappears from B's list into the blocked list.
+    b.send(Command::Block(a_id));
+    wait_until("A blocked on B", || b.state().blocked.iter().any(|x| x.node_id == a_id && x.online)).await;
+    assert!(peer(&b.state(), "alpha").is_none());
+    a.send(Command::Pair(b_id));
+    wait_until("A sees decline", || declined(&a.state())).await;
+    assert!(b.state().peers.iter().all(|p| p.pairing.is_none()));
+
+    // Unblocked, but pairing requests switched off: still declined.
+    a.send(Command::CancelPair(b_id));
+    b.send(Command::Unblock(a_id));
+    let mut settings = b.state().settings.clone();
+    settings.accept_pairing = false;
+    b.send(Command::SetSettings(settings.clone()));
+    wait_until("A back in B's list", || peer(&b.state(), "alpha").is_some() && b.state().blocked.is_empty()).await;
+    wait_until("A idle", || peer(&a.state(), "beta").is_some_and(|p| p.pairing.is_none())).await;
+    a.send(Command::Pair(b_id));
+    wait_until("A sees decline again", || declined(&a.state())).await;
+
+    // Switched back on: B shows the code as usual.
+    a.send(Command::CancelPair(b_id));
+    settings.accept_pairing = true;
+    b.send(Command::SetSettings(settings));
+    wait_until("A idle again", || peer(&a.state(), "beta").is_some_and(|p| p.pairing.is_none())).await;
+    a.send(Command::Pair(b_id));
+    wait_until("B shows code", || peer(&b.state(), "alpha").is_some_and(|p| matches!(p.pairing, Some(UiPairing::ShowCode { .. })))).await;
+}
+
 /// Connect and pair two engines, with B placed to the right of A.
 async fn paired(pa: u16, pb: u16) -> (EngineHandle, EngineHandle, UnboundedReceiver<InputEvent>) {
     let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };

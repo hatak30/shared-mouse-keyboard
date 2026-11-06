@@ -254,8 +254,12 @@ async fn cancelling_a_download_stops_it() {
     let src = std::env::temp_dir().join(format!("smk-src-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&src).unwrap();
     let file = src.join("huge.bin");
-    // Sparse 20 GB file: instant to create, far too big to finish in the test.
-    std::fs::File::create(&file).unwrap().set_len(20_000_000_000).unwrap();
+    // Big sparse file: instant to create, far too big to finish in the test.
+    // Capped by free space, since the receiver refuses what won't fit (CI
+    // runners can have less than 20 GB free).
+    let free = fs4::available_space(&src).unwrap();
+    let size = (free / 2).min(20_000_000_000);
+    std::fs::File::create(&file).unwrap().set_len(size).unwrap();
 
     a.send(Command::OfferFiles(vec![file]));
     let mut id = None;
@@ -265,9 +269,14 @@ async fn cancelling_a_download_stops_it() {
     })
     .await;
     b.send(Command::StartTransfer(id.unwrap()));
-    wait_until("some progress", || transfer_on(&b.state(), true).is_some_and(|t| t.done > 0)).await;
+    wait_until("some progress", || {
+        let t = transfer_on(&b.state(), true);
+        assert!(t.as_ref().is_none_or(|t| t.error.is_none()), "transfer failed: {:?}", t.map(|t| t.error.clone()));
+        t.is_some_and(|t| t.done > 0)
+    })
+    .await;
     b.send(Command::CancelTransfer(id.unwrap()));
     wait_until("cancelled", || transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Cancelled)).await;
     let done = transfer_on(&b.state(), true).unwrap().done;
-    assert!(done < 20_000_000_000);
+    assert!(done < size);
 }

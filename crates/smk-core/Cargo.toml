@@ -52,4 +52,5 @@ clipboard-rs = { version = "0.3", features = ["wayland"] }
 libc = "0.2"
 
 [dev-dependencies]
+fs4 = "1"
 tokio = { version = "1", features = ["full", "test-util"] }

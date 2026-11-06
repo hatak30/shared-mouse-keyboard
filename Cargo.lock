@@ -3857,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "shared-mouse-keyboard"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "smk-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bincode",

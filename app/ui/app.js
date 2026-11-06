@@ -471,6 +471,8 @@ async function loadAutostart() {
 autostartBox.addEventListener("change", async () => {
   await call("set_autostart", { enabled: autostartBox.checked });
   loadAutostart();
+});
+loadAutostart();
 
 // Login screen helper (macOS only; the command returns null elsewhere).
 const loginBox = $("#login-screen");
@@ -490,8 +492,6 @@ loginBox.addEventListener("change", async () => {
   loadLoginScreen();
 });
 loadLoginScreen();
-});
-loadAutostart();
 settingsForm.elements.pointer_speed.addEventListener("input", (e) => {
   $("#speed-out").textContent = `${Number(e.target.value).toFixed(2)}×`;
 });

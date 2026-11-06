@@ -9,6 +9,22 @@ Use one mouse and keyboard to control several computers on your local network, a
 - **Automatic discovery.** Machines on the same LAN find each other. You can also add one manually by IP or host name.
 - **Standalone app.** One self-contained app per OS. It keeps running in the system tray when its window is closed.
 
+## Screenshots
+
+**Layout editor.** Drag machines to match your desk. The highlighted machine is the one currently receiving your mouse and keyboard.
+
+![Layout editor](docs/screenshots/layout.png)
+
+| Machines and pairing | Pairing code |
+|---|---|
+| ![Machines](docs/screenshots/machines.png) | ![Pairing request](docs/screenshots/pair.png) |
+| **Settings** | **Permissions** |
+| ![Settings](docs/screenshots/settings.png) | ![Permissions](docs/screenshots/permissions.png) |
+
+## Download
+
+Get the installer for your system from the [latest release](https://github.com/hatak30/shared-mouse-keyboard/releases/latest): `.dmg` for macOS (Apple Silicon and Intel), `-setup.exe` or `.msi` for Windows, and `.deb`, `.rpm` or `.AppImage` for Linux. After that the app keeps itself up to date.
+
 ## How it works
 
 Every machine runs the same app. Whichever machine you're physically using captures its mouse and keyboard with OS-level hooks. When the cursor crosses an edge that has a neighbour in the layout, the app keeps the local cursor in place and streams input to the neighbour, which replays it as synthetic input. Moving back across the edge returns control. Any machine can be the controlling one.

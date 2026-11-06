@@ -300,9 +300,10 @@ async fn cancelling_a_download_stops_it() {
     let file = src.join("huge.bin");
     // Big sparse file: instant to create, far too big to finish in the test.
     // Capped by free space, since the receiver refuses what won't fit (CI
-    // runners can have less than 20 GB free).
+    // runners can have less than 20 GB free). NTFS doesn't create sparse
+    // files, so the source itself also uses that much space there.
     let free = fs4::available_space(&src).unwrap();
-    let size = (free / 2).min(20_000_000_000);
+    let size = (free / 4).min(20_000_000_000);
     std::fs::File::create(&file).unwrap().set_len(size).unwrap();
 
     a.send(Command::OfferFiles(vec![file]));

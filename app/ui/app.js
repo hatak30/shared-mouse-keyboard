@@ -440,7 +440,6 @@ function renderSettings() {
   }
   $("#speed-out").textContent = `${Number(s.pointer_speed).toFixed(2)}×`;
   settingsForm.elements.clipboard_files_enabled.disabled = !s.clipboard_enabled;
-  settingsForm.elements.clipboard_max_file_mb.disabled = !s.clipboard_enabled || !s.clipboard_files_enabled;
 }
 
 function collectSettings() {
@@ -449,7 +448,6 @@ function collectSettings() {
   return {
     clipboard_enabled: f.clipboard_enabled.checked,
     clipboard_files_enabled: f.clipboard_files_enabled.checked,
-    clipboard_max_file_mb: Math.max(1, Math.round(num("clipboard_max_file_mb", 100))),
     swap_cmd_ctrl: f.swap_cmd_ctrl.checked,
     hotkeys_enabled: f.hotkeys_enabled.checked,
     edge_resistance_px: Math.max(0, num("edge_resistance_px", 0)),
@@ -523,6 +521,102 @@ $("#rename-form").addEventListener("submit", (e) => {
   $("#rename-modal").classList.add("hidden");
 });
 
+// ------------------------------------------------------------------ file transfers
+
+const xferSpeed = {}; // id -> { t, done, bps }
+function fmtBytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return i === 0 ? `${n} B` : `${n.toFixed(n >= 100 ? 0 : 1)} ${u[i]}`;
+}
+function fmtDuration(s) {
+  if (!isFinite(s) || s < 0) return "";
+  if (s < 60) return `${Math.max(1, Math.round(s))} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+}
+function speedOf(t) {
+  const now = Date.now();
+  const prev = xferSpeed[t.id];
+  if (!prev) {
+    xferSpeed[t.id] = { t: now, done: t.done, bps: 0 };
+    return 0;
+  }
+  const dt = (now - prev.t) / 1000;
+  if (dt >= 0.5) {
+    const inst = (t.done - prev.done) / dt;
+    prev.bps = prev.bps ? prev.bps * 0.7 + inst * 0.3 : inst;
+    prev.t = now;
+    prev.done = t.done;
+  }
+  return prev.bps;
+}
+
+// Finished entries fade out on their own after a while.
+const XFER_HIDE_AFTER = { done: 20000, cancelled: 15000 };
+function renderTransfers() {
+  const box = $("#transfers");
+  const now = Date.now();
+  const visible = state.transfers.filter((t) => {
+    const ttl = XFER_HIDE_AFTER[t.state];
+    return !(ttl && t.finished_ms && now - t.finished_ms > ttl);
+  });
+  box.replaceChildren();
+  for (const t of visible) {
+    const what = `${t.label}${t.files > 1 ? ` (${t.files} files, ${fmtBytes(t.total)})` : ` (${fmtBytes(t.total)})`}`;
+    const pct = t.total ? Math.min(100, (t.done / t.total) * 100) : 100;
+    const btn = (label, cls, fn) => el("button", { class: `btn small ${cls}`, onclick: fn }, label);
+    const cancel = btn("Cancel", "", () => call("cancel_transfer", { id: t.id }));
+    const dismiss = btn("Dismiss", "", () => call("dismiss_transfer", { id: t.id }));
+    let icon = t.incoming ? "📥" : "📤", title, sub, buttons = [], bar = null, cls = "xfer";
+    switch (t.state) {
+      case "pending":
+        title = `${what} copied on ${t.peer}`;
+        sub = "Will download when you move the cursor to this machine.";
+        buttons = [btn("Download now", "primary", () => call("start_transfer", { id: t.id })), dismiss];
+        break;
+      case "running": {
+        const bps = speedOf(t);
+        const left = bps > 0 ? (t.total - t.done) / bps : NaN;
+        title = t.incoming ? `Receiving ${what} from ${t.peer}` : `Sending ${what} to ${t.peer}`;
+        sub = [`${Math.floor(pct)}%`, `${fmtBytes(t.done)} of ${fmtBytes(t.total)}`, bps > 0 ? `${fmtBytes(bps)}/s` : "", left ? `${fmtDuration(left)} left` : ""]
+          .filter(Boolean).join(" · ");
+        bar = el("div", { class: "bar" }, el("div", { style: `width:${pct}%` }));
+        buttons = [cancel];
+        break;
+      }
+      case "done":
+        icon = "✅";
+        cls += " done";
+        title = t.incoming ? `${t.label} received from ${t.peer}` : `${t.label} sent to ${t.peer}`;
+        sub = t.incoming ? "Ready to paste." : `${fmtBytes(t.total)} transferred.`;
+        buttons = [dismiss];
+        break;
+      case "cancelled":
+        icon = "⏹";
+        title = `${t.incoming ? "Download" : "Upload"} of ${t.label} stopped`;
+        sub = t.error || "Cancelled.";
+        buttons = [dismiss];
+        break;
+      default:
+        icon = "⚠️";
+        cls += " failed";
+        title = `Could not ${t.incoming ? "receive" : "send"} ${t.label}`;
+        sub = t.error || "Unknown error.";
+        buttons = [dismiss];
+    }
+    box.append(el("div", { class: cls },
+      el("div", { class: "icon" }, icon),
+      el("div", { class: "title", title }, title),
+      el("div", { class: "buttons" }, buttons),
+      bar,
+      el("div", { class: "sub" }, sub)));
+  }
+}
+// Keep fade-outs and speed estimates moving between state updates.
+setInterval(() => state && renderTransfers(), 1000);
+
 // ------------------------------------------------------------------ updates
 
 let updateDismissed = null;
@@ -584,6 +678,7 @@ call("get_update").then(showUpdate);
 function render() {
   if (!state) return;
   renderHeader();
+  renderTransfers();
   renderLayout();
   renderMachines();
   renderPairModal();

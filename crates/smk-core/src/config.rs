@@ -25,8 +25,6 @@ pub struct TrustedPeer {
 pub struct Settings {
     pub clipboard_enabled: bool,
     pub clipboard_files_enabled: bool,
-    /// Max total size of files sent through the clipboard, in MB.
-    pub clipboard_max_file_mb: u64,
     /// When controlling a Windows/Linux machine from a Mac (or vice versa),
     /// swap Command and Control so shortcuts feel native.
     pub swap_cmd_ctrl: bool,
@@ -46,7 +44,6 @@ impl Default for Settings {
         Self {
             clipboard_enabled: true,
             clipboard_files_enabled: true,
-            clipboard_max_file_mb: 100,
             swap_cmd_ctrl: true,
             hotkeys_enabled: true,
             edge_resistance_px: 0.0,

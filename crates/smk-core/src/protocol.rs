@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::layout::Layout;
 
 /// Bumped whenever the message format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Hard cap for a single frame (clipboard with files can be large).
 pub const MAX_FRAME: usize = 512 * 1024 * 1024;
 
@@ -98,20 +98,11 @@ pub struct Hello {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ClipboardFile {
-    /// Path relative to the copied top-level item, using `/` separators.
-    pub rel_path: String,
-    pub is_dir: bool,
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClipboardData {
     pub text: Option<String>,
     pub html: Option<String>,
     pub rtf: Option<String>,
     pub image_png: Option<Vec<u8>>,
-    pub files: Vec<ClipboardFile>,
 }
 
 impl ClipboardData {
@@ -120,7 +111,6 @@ impl ClipboardData {
             && self.html.is_none()
             && self.rtf.is_none()
             && self.image_png.is_none()
-            && self.files.is_empty()
     }
 }
 
@@ -143,6 +133,14 @@ pub enum Message {
     Clipboard(ClipboardData),
     Ping,
     Pong,
+    /// Files were copied on the sender; contents are fetched separately.
+    ClipboardFiles(crate::transfer::FileOffer),
+    /// First frame on a dedicated transfer connection.
+    FetchFiles { id: Uuid },
+    /// A chunk of file `index` of the offer (transfer connection only).
+    FileData { index: u32, data: Vec<u8> },
+    FilesDone,
+    FilesError(String),
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> anyhow::Result<()> {

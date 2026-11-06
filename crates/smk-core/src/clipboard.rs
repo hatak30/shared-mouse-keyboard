@@ -1,13 +1,12 @@
-//! Clipboard synchronisation: text, HTML, RTF, images and files.
+//! Clipboard access: text, HTML, RTF, images, and file references.
 //!
 //! A dedicated thread owns the platform clipboard (some platforms require the
-//! owner to stay alive to serve paste requests). Files received from a peer
-//! are written to a cache directory and placed on the clipboard as file
-//! references, so pasting in a file manager copies them.
+//! owner to stay alive to serve paste requests). Copied *files* are only
+//! reported as paths here; their contents travel via [`crate::transfer`] and
+//! are placed back on the receiver's clipboard as file references.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clipboard_rs::common::RustImage;
 use clipboard_rs::{
@@ -16,16 +15,23 @@ use clipboard_rs::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::protocol::{ClipboardData, ClipboardFile};
+use crate::protocol::ClipboardData;
 
 pub struct ReadOptions {
     pub files: bool,
-    pub max_file_bytes: u64,
+}
+
+/// What is on the local clipboard.
+#[derive(Debug)]
+pub enum Clip {
+    Data(ClipboardData),
+    Files(Vec<PathBuf>),
 }
 
 enum Cmd {
-    Read(ReadOptions, mpsc::Sender<anyhow::Result<ClipboardData>>),
+    Read(ReadOptions, mpsc::Sender<anyhow::Result<Clip>>),
     Write(ClipboardData, mpsc::Sender<anyhow::Result<()>>),
+    WriteFiles(Vec<PathBuf>, mpsc::Sender<anyhow::Result<()>>),
 }
 
 #[derive(Clone)]
@@ -56,6 +62,10 @@ impl ClipboardHandle {
                         Cmd::Write(data, reply) => {
                             let _ = reply.send(write(&ctx, data));
                         }
+                        Cmd::WriteFiles(paths, reply) => {
+                            let files = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                            let _ = reply.send(ctx.set_files(files).map_err(err));
+                        }
                     }
                 }
             })?;
@@ -81,7 +91,7 @@ impl ClipboardHandle {
     }
 
     /// Read the clipboard (blocking; call from `spawn_blocking`).
-    pub fn read(&self, opts: ReadOptions) -> anyhow::Result<ClipboardData> {
+    pub fn read(&self, opts: ReadOptions) -> anyhow::Result<Clip> {
         let (tx, rx) = mpsc::channel();
         self.tx.send(Cmd::Read(opts, tx))?;
         rx.recv()?
@@ -93,33 +103,29 @@ impl ClipboardHandle {
         self.tx.send(Cmd::Write(data, tx))?;
         rx.recv()?
     }
+
+    /// Put file references on the clipboard (blocking).
+    pub fn write_files(&self, paths: Vec<PathBuf>) -> anyhow::Result<()> {
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Cmd::WriteFiles(paths, tx))?;
+        rx.recv()?
+    }
 }
 
 fn err(e: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
     anyhow::anyhow!("{e}")
 }
 
-fn read(ctx: &ClipboardContext, opts: &ReadOptions) -> anyhow::Result<ClipboardData> {
+fn read(ctx: &ClipboardContext, opts: &ReadOptions) -> anyhow::Result<Clip> {
     let mut data = ClipboardData::default();
     if ctx.has(ContentFormat::Files) {
         if !opts.files {
-            return Ok(data);
+            return Ok(Clip::Data(data));
         }
-        let paths: Vec<PathBuf> = ctx.get_files().map_err(err)?.iter().map(|p| uri_to_path(p)).collect();
-        let total: u64 = paths.iter().map(|p| dir_size(p)).sum();
-        if total > opts.max_file_bytes {
-            anyhow::bail!(
-                "copied files are {} MB, over the {} MB limit",
-                total / 1_000_000,
-                opts.max_file_bytes / 1_000_000
-            );
-        }
-        for p in &paths {
-            collect_files(p, p.parent().unwrap_or(Path::new("")), &mut data.files)?;
-        }
-        // File copies usually also carry the file name as text and an icon as
-        // an image; only the files matter.
-        return Ok(data);
+        // File copies usually also carry the name as text and an icon as an
+        // image; only the files matter.
+        let paths = ctx.get_files().map_err(err)?.iter().map(|p| uri_to_path(p)).collect();
+        return Ok(Clip::Files(paths));
     }
     if ctx.has(ContentFormat::Text) {
         data.text = ctx.get_text().ok().filter(|t| !t.is_empty());
@@ -137,25 +143,10 @@ fn read(ctx: &ClipboardContext, opts: &ReadOptions) -> anyhow::Result<ClipboardD
             }
         }
     }
-    Ok(data)
+    Ok(Clip::Data(data))
 }
 
 fn write(ctx: &ClipboardContext, data: ClipboardData) -> anyhow::Result<()> {
-    if !data.files.is_empty() {
-        let dir = materialize_files(&data.files)?;
-        let mut tops: Vec<String> = Vec::new();
-        for f in &data.files {
-            let top = f.rel_path.split('/').next().unwrap_or_default().to_string();
-            if !top.is_empty() && !tops.contains(&top) {
-                tops.push(top);
-            }
-        }
-        let paths: Vec<String> = tops
-            .iter()
-            .map(|t| dir.join(t).to_string_lossy().into_owned())
-            .collect();
-        return ctx.set_files(paths).map_err(err);
-    }
     let mut contents = Vec::new();
     if let Some(t) = data.text {
         contents.push(ClipboardContent::Text(t));
@@ -198,80 +189,6 @@ fn uri_to_path(s: &str) -> PathBuf {
         i += 1;
     }
     PathBuf::from(String::from_utf8_lossy(&out).into_owned())
-}
-
-fn dir_size(p: &Path) -> u64 {
-    let Ok(meta) = std::fs::symlink_metadata(p) else { return 0 };
-    if meta.is_dir() {
-        std::fs::read_dir(p)
-            .map(|rd| rd.flatten().map(|e| dir_size(&e.path())).sum())
-            .unwrap_or(0)
-    } else {
-        meta.len()
-    }
-}
-
-fn collect_files(p: &Path, base: &Path, out: &mut Vec<ClipboardFile>) -> anyhow::Result<()> {
-    let rel = p
-        .strip_prefix(base)
-        .unwrap_or(p)
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/");
-    let meta = std::fs::symlink_metadata(p)?;
-    if meta.is_dir() {
-        out.push(ClipboardFile { rel_path: rel, is_dir: true, data: Vec::new() });
-        for entry in std::fs::read_dir(p)?.flatten() {
-            collect_files(&entry.path(), base, out)?;
-        }
-    } else if meta.is_file() {
-        out.push(ClipboardFile { rel_path: rel, is_dir: false, data: std::fs::read(p)? });
-    }
-    Ok(())
-}
-
-fn clipboard_cache() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("shared-mouse-keyboard")
-        .join("clipboard")
-}
-
-fn materialize_files(files: &[ClipboardFile]) -> anyhow::Result<PathBuf> {
-    let root = clipboard_cache();
-    // Keep only the most recent few transfers.
-    if let Ok(rd) = std::fs::read_dir(&root) {
-        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-        dirs.sort();
-        while dirs.len() >= 5 {
-            let _ = std::fs::remove_dir_all(dirs.remove(0));
-        }
-    }
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
-    let dir = root.join(format!("{stamp}"));
-    std::fs::create_dir_all(&dir)?;
-    for f in files {
-        // Never allow a peer to write outside the transfer directory.
-        let safe: PathBuf = f
-            .rel_path
-            .split('/')
-            .filter(|c| !c.is_empty() && *c != "." && *c != ".." && !c.contains('\\') && !c.contains(':'))
-            .collect();
-        if safe.as_os_str().is_empty() {
-            continue;
-        }
-        let target = dir.join(safe);
-        if f.is_dir {
-            std::fs::create_dir_all(&target)?;
-        } else {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&target, &f.data)?;
-        }
-    }
-    Ok(dir)
 }
 
 #[cfg(test)]

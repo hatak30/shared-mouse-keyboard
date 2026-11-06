@@ -8,7 +8,7 @@ Use one mouse and keyboard to control several computers on your local network, a
 
 - **Seamless cursor movement.** Push the cursor against a screen edge and it continues on the neighbouring machine.
 - **Visual layout editor.** Drag machines on a grid to match where your screens physically stand (left, right, above, below).
-- **Clipboard sharing.** Copy on one machine and paste on another. Copied files are transferred too, up to a configurable size limit.
+- **Clipboard sharing.** Copy on one machine and paste on another: text, rich text, images, and **files and folders of any size**, streamed in the background with progress and a Cancel button.
 - **Secure by default.** All traffic is encrypted with TLS. Each machine is paired once with a 6‑digit code.
 - **Automatic discovery.** Machines on the same LAN find each other. You can also add one manually by IP or host name.
 - **Standalone app.** One self-contained app per OS. It keeps running in the system tray when its window is closed.
@@ -38,6 +38,8 @@ You only download it once: the app checks GitHub for new versions and offers **I
 | Machines and pairing | Pairing code |
 |---|---|
 | ![Machines](docs/screenshots/machines.png) | ![Pairing request](docs/screenshots/pair.png) |
+| **Copying files: progress and cancel** | |
+| ![File transfers](docs/screenshots/transfers.png) | |
 | **Settings** | **Permissions** |
 | ![Settings](docs/screenshots/settings.png) | ![Permissions](docs/screenshots/permissions.png) |
 
@@ -81,6 +83,17 @@ Keys are sent in a neutral format (Linux evdev key codes), so a key pressed on o
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Bring the cursor back to the machine you're using |
 
 The tray menu also has **Return cursor to this machine**.
+
+## Copying files and folders
+
+1. Copy files or folders as usual (⌘C / Ctrl+C in Finder, Explorer or your file manager). Only the **list** of items (names and sizes) is sent to your other machines, which is instant.
+2. Move the cursor to another machine. That machine downloads the files from the one you copied on over a **separate** encrypted connection, so the mouse and keyboard stay responsive. Progress (percentage, speed, time left) and a **Cancel** button appear at the top of the control panel on both machines. **Download now** starts it without moving the cursor.
+3. When it finishes, the files are on the clipboard. Paste (⌘V / Ctrl+V) as usual.
+
+- **No size limit.** Files are streamed straight to disk in chunks, so memory use stays flat. The only check is free disk space on the receiving machine.
+- Folder structure, empty folders and modification times are kept. Symbolic links are skipped.
+- Copying something new cancels a transfer that is still running, and partial files are removed.
+- Received files live in the app's cache folder (`~/Library/Caches/shared-mouse-keyboard/clipboard` on macOS). The last few transfers are kept, and older ones are deleted automatically. Pasting copies them to where you paste.
 
 ## Permissions
 

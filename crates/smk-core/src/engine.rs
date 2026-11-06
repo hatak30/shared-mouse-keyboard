@@ -15,7 +15,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_rustls::TlsConnector;
 use uuid::Uuid;
 
-use crate::clipboard::{ClipboardHandle, ReadOptions};
+use crate::clipboard::{Clip, ClipboardHandle, ReadOptions};
 use crate::config::{Config, Settings, TrustedPeer};
 use crate::discovery::{self, Discovered};
 use crate::input::{self, CaptureShared, CapturedEvent, Injector};
@@ -25,6 +25,7 @@ use crate::net::{self, ConnId, NetEvent};
 use crate::permissions::{self, Permission};
 use crate::protocol::{ClipboardData, Hello, InputEvent, Message, MouseButton, Os, Rect, PROTOCOL_VERSION};
 use crate::tls::{pairing_code, Identity};
+use crate::transfer::{self, FileOffer, LocalOffer};
 
 const MAX_PAIR_ATTEMPTS: u32 = 3;
 
@@ -77,6 +78,35 @@ pub struct UiState {
     pub capture_error: Option<String>,
     pub inject_error: Option<String>,
     pub log: Vec<LogEntry>,
+    /// File transfers (copied files/folders), newest first.
+    pub transfers: Vec<UiTransfer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferState {
+    /// Offered by another machine; downloads when the cursor comes here.
+    Pending,
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UiTransfer {
+    pub id: Uuid,
+    /// true = receiving files on this machine, false = sending.
+    pub incoming: bool,
+    pub peer: String,
+    pub label: String,
+    pub files: usize,
+    pub total: u64,
+    pub done: u64,
+    pub state: TransferState,
+    pub error: Option<String>,
+    pub started_ms: Option<u64>,
+    pub finished_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +131,12 @@ pub enum Command {
     SetName(String),
     ReturnHome,
     RefreshPermissions,
+    /// Start downloading a pending incoming transfer now.
+    StartTransfer(Uuid),
+    /// Offer these files to paired machines as if they had been copied.
+    OfferFiles(Vec<std::path::PathBuf>),
+    CancelTransfer(Uuid),
+    DismissTransfer(Uuid),
 }
 
 /// Options for [`start`]. `Default` gives the normal desktop behaviour.
@@ -120,6 +156,8 @@ pub struct StartOptions {
     /// Use the existing config/identity without ever writing them
     /// (macOS login-screen helper).
     pub read_only: bool,
+    /// Where received files are stored (default: the user cache folder).
+    pub download_root: Option<std::path::PathBuf>,
 }
 
 impl Default for StartOptions {
@@ -133,6 +171,7 @@ impl Default for StartOptions {
             screen: None,
             inject_sink: None,
             read_only: false,
+            download_root: None,
         }
     }
 }
@@ -204,6 +243,21 @@ enum Control {
     },
 }
 
+struct Xfer {
+    ui: UiTransfer,
+    abort: Option<tokio::task::AbortHandle>,
+    /// Receiving side: the transfer directory (deleted on cancel/failure).
+    dir: Option<std::path::PathBuf>,
+    /// Receiving side: the offering machine and its offer.
+    from: Option<(Uuid, FileOffer)>,
+}
+
+enum XferEvent {
+    Progress { id: Uuid, done: u64 },
+    /// `Ok(Some(paths))` for a finished download, `Ok(None)` for an upload.
+    Finished { id: Uuid, result: Result<Option<Vec<std::path::PathBuf>>, String> },
+}
+
 struct Engine {
     opts: StartOptions,
     cfg: Config,
@@ -233,6 +287,11 @@ struct Engine {
     capture_tx: UnboundedSender<CapturedEvent>,
     clipboard: Option<ClipboardHandle>,
     clip_tx: UnboundedSender<ClipboardData>,
+    offer_tx: UnboundedSender<Result<LocalOffer, String>>,
+    xfer_tx: UnboundedSender<XferEvent>,
+    /// Files copied on this machine that peers may fetch.
+    local_offer: Option<Arc<LocalOffer>>,
+    transfers: Vec<Xfer>,
     clip_ignore_until: Instant,
     clip_last_hash: Option<[u8; 32]>,
     clip_pending: Option<Instant>,
@@ -263,6 +322,8 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
     let (disc_tx, disc_rx) = unbounded_channel();
     let (clip_change_tx, clip_change_rx) = unbounded_channel();
     let (clip_tx, clip_rx) = unbounded_channel();
+    let (offer_tx, offer_rx) = unbounded_channel();
+    let (xfer_tx, xfer_rx) = unbounded_channel();
 
     net::listen(cfg.port, net::acceptor(identity.server_config()?), net_tx.clone()).await?;
     let connector = net::connector(identity.client_config()?);
@@ -308,6 +369,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         capture_error: None,
         inject_error: None,
         log: vec![],
+        transfers: vec![],
     }));
 
     let mut engine = Engine {
@@ -336,6 +398,10 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         capture_tx: capture_tx.clone(),
         clipboard,
         clip_tx,
+        offer_tx,
+        xfer_tx,
+        local_offer: None,
+        transfers: Vec::new(),
         clip_ignore_until: Instant::now(),
         clip_last_hash: None,
         clip_pending: None,
@@ -348,11 +414,12 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
     engine.log(format!("Started as \"{}\" on port {}", engine.cfg.name, engine.cfg.port));
     engine.publish();
 
-    tokio::spawn(engine.run(net_rx, cmd_rx, capture_rx, disc_rx, clip_change_rx, clip_rx));
+    tokio::spawn(engine.run(net_rx, cmd_rx, capture_rx, disc_rx, clip_change_rx, clip_rx, offer_rx, xfer_rx));
     Ok(EngineHandle { cmd: cmd_tx, state, capture: capture_tx })
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)] // one receiver per event source
     async fn run(
         mut self,
         mut net_rx: UnboundedReceiver<NetEvent>,
@@ -361,6 +428,8 @@ impl Engine {
         mut disc_rx: UnboundedReceiver<Discovered>,
         mut clip_change_rx: UnboundedReceiver<()>,
         mut clip_rx: UnboundedReceiver<ClipboardData>,
+        mut offer_rx: UnboundedReceiver<Result<LocalOffer, String>>,
+        mut xfer_rx: UnboundedReceiver<XferEvent>,
     ) {
         let mut tick = tokio::time::interval(Duration::from_secs(3));
         let mut fast = tokio::time::interval(Duration::from_millis(150));
@@ -384,6 +453,8 @@ impl Engine {
                     }
                 }
                 Some(data) = clip_rx.recv() => self.broadcast_clipboard(data),
+                Some(offer) = offer_rx.recv() => self.on_local_offer(offer),
+                Some(ev) = xfer_rx.recv() => self.on_xfer(ev),
                 _ = fast.tick() => {
                     if let Some(t) = self.clip_pending {
                         if Instant::now() >= t {
@@ -574,6 +645,7 @@ impl Engine {
                 }
             }
             NetEvent::Message { conn, msg } => self.on_message(conn, msg),
+            NetEvent::FetchRequest { fingerprint, id, stream } => self.on_fetch_request(fingerprint, id, stream),
         }
     }
 
@@ -615,6 +687,8 @@ impl Engine {
                     tracing::debug!("{n} took control");
                 }
                 self.inject(InputEvent::MouseMove { x, y });
+                // The cursor is here now: fetch files copied elsewhere.
+                self.start_pending_incoming();
                 self.dirty = true;
             }
             Message::Leave => {
@@ -623,7 +697,14 @@ impl Engine {
                 }
             }
             Message::Input(ev) => self.inject_remote(ev),
-            Message::Clipboard(data) => self.write_clipboard(data),
+            Message::Clipboard(data) => {
+                // Newer clipboard content replaces any pending file download.
+                self.cancel_incoming("replaced by a newer copy");
+                self.write_clipboard(data);
+            }
+            Message::ClipboardFiles(offer) => self.on_remote_offer(conn, offer),
+            // Transfer frames only belong on transfer connections.
+            Message::FetchFiles { .. } | Message::FileData { .. } | Message::FilesDone | Message::FilesError(_) => {}
         }
     }
 
@@ -975,6 +1056,18 @@ impl Engine {
                 let c = self.screen.center();
                 self.return_local(c);
             }
+            Command::StartTransfer(id) => self.start_incoming(id),
+            Command::OfferFiles(paths) => {
+                let tx = self.offer_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(transfer::scan(&paths).map_err(|e| e.to_string()));
+                });
+            }
+            Command::CancelTransfer(id) => self.cancel_transfer(id, "cancelled"),
+            Command::DismissTransfer(id) => {
+                self.transfers.retain(|t| t.ui.id != id || matches!(t.ui.state, TransferState::Running));
+                self.dirty = true;
+            }
             Command::RefreshPermissions => {
                 self.try_start_capture();
                 self.dirty = true;
@@ -1191,6 +1284,7 @@ impl Engine {
             self.set_grab(false);
             let (x, y) = self.screen.clamp(at.0, at.1);
             self.warp(x, y);
+            self.start_pending_incoming();
             self.dirty = true;
         }
     }
@@ -1238,16 +1332,19 @@ impl Engine {
             return;
         }
         let Some(cb) = self.clipboard.clone() else { return };
-        let opts = ReadOptions {
-            files: self.cfg.settings.clipboard_files_enabled,
-            max_file_bytes: self.cfg.settings.clipboard_max_file_mb * 1_000_000,
-        };
+        let opts = ReadOptions { files: self.cfg.settings.clipboard_files_enabled };
         let tx = self.clip_tx.clone();
+        let offer_tx = self.offer_tx.clone();
         tokio::task::spawn_blocking(move || match cb.read(opts) {
-            Ok(d) if !d.is_empty() => {
+            Ok(Clip::Data(d)) if !d.is_empty() => {
                 let _ = tx.send(d);
             }
-            Ok(_) => {}
+            Ok(Clip::Data(_)) => {}
+            // Only names and sizes are collected here; contents are streamed
+            // later to the machine that needs them.
+            Ok(Clip::Files(paths)) => {
+                let _ = offer_tx.send(transfer::scan(&paths).map_err(|e| e.to_string()));
+            }
             Err(e) => tracing::warn!("clipboard read failed: {e}"),
         });
     }
@@ -1258,6 +1355,8 @@ impl Engine {
             return;
         }
         self.clip_last_hash = Some(hash);
+        self.supersede_local_offer();
+        self.cancel_incoming("replaced by a newer copy");
         let what = describe_clip(&data);
         self.broadcast_trusted(&Message::Clipboard(data));
         tracing::info!("shared clipboard ({what})");
@@ -1265,9 +1364,6 @@ impl Engine {
 
     fn write_clipboard(&mut self, data: ClipboardData) {
         if !self.cfg.settings.clipboard_enabled {
-            return;
-        }
-        if !data.files.is_empty() && !self.cfg.settings.clipboard_files_enabled {
             return;
         }
         let Some(cb) = self.clipboard.clone() else { return };
@@ -1279,6 +1375,317 @@ impl Engine {
                 tracing::warn!("clipboard write failed: {e}");
             }
         });
+    }
+
+    // ------------------------------------------------------------ file transfers
+
+    fn xfer(&mut self, id: Uuid) -> Option<&mut Xfer> {
+        self.transfers.iter_mut().find(|t| t.ui.id == id)
+    }
+
+    fn push_transfer(&mut self, x: Xfer) {
+        self.transfers.insert(0, x);
+        // Keep the list short: drop the oldest finished entries.
+        while self.transfers.len() > 8 {
+            match self.transfers.iter().rposition(|t| !matches!(t.ui.state, TransferState::Running | TransferState::Pending)) {
+                Some(i) => {
+                    self.transfers.remove(i);
+                }
+                None => break,
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// A new local copy (or a remote one) makes our previous file offer stale:
+    /// stop serving it and abort uploads in progress.
+    fn supersede_local_offer(&mut self) {
+        if self.local_offer.take().is_some() {
+            let ids: Vec<Uuid> = self
+                .transfers
+                .iter()
+                .filter(|t| !t.ui.incoming && t.ui.state == TransferState::Running)
+                .map(|t| t.ui.id)
+                .collect();
+            for id in ids {
+                self.cancel_transfer(id, "replaced by a newer copy");
+            }
+        }
+    }
+
+    /// Cancel the pending or running download, if any.
+    fn cancel_incoming(&mut self, why: &str) {
+        let ids: Vec<Uuid> = self
+            .transfers
+            .iter()
+            .filter(|t| t.ui.incoming && matches!(t.ui.state, TransferState::Pending | TransferState::Running))
+            .map(|t| t.ui.id)
+            .collect();
+        for id in ids {
+            self.cancel_transfer(id, why);
+        }
+    }
+
+    fn cancel_transfer(&mut self, id: Uuid, why: &str) {
+        let Some(t) = self.xfer(id) else { return };
+        if !matches!(t.ui.state, TransferState::Pending | TransferState::Running) {
+            return;
+        }
+        if let Some(a) = t.abort.take() {
+            a.abort();
+        }
+        t.ui.state = TransferState::Cancelled;
+        t.ui.error = Some(why.to_string());
+        t.ui.finished_ms = Some(now_ms());
+        if let Some(dir) = t.dir.take() {
+            tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir));
+        }
+        self.dirty = true;
+    }
+
+    fn on_local_offer(&mut self, res: Result<LocalOffer, String>) {
+        let local = match res {
+            Ok(l) => l,
+            Err(e) => {
+                self.log(format!("Could not read the copied files: {e}"));
+                return;
+            }
+        };
+        if local.offer.entries.is_empty() {
+            return;
+        }
+        self.supersede_local_offer();
+        self.cancel_incoming("replaced by a newer copy");
+        let offer = local.offer.clone();
+        self.local_offer = Some(Arc::new(local));
+        // Copying the same files twice in a row should not re-announce.
+        self.clip_last_hash = None;
+        self.broadcast_trusted(&Message::ClipboardFiles(offer.clone()));
+        tracing::info!(
+            "copied {} ({} files, {}) — offered to paired machines",
+            offer.label(),
+            offer.file_count(),
+            human_bytes(offer.total)
+        );
+    }
+
+    fn on_remote_offer(&mut self, conn: ConnId, offer: FileOffer) {
+        if !self.cfg.settings.clipboard_enabled || !self.cfg.settings.clipboard_files_enabled {
+            return;
+        }
+        let Some(h) = self.peers.get(&conn).and_then(|p| p.hello.clone()) else { return };
+        self.supersede_local_offer();
+        self.cancel_incoming("replaced by a newer copy");
+        self.push_transfer(Xfer {
+            ui: UiTransfer {
+                id: offer.id,
+                incoming: true,
+                peer: h.name.clone(),
+                label: offer.label(),
+                files: offer.file_count(),
+                total: offer.total,
+                done: 0,
+                state: TransferState::Pending,
+                error: None,
+                started_ms: None,
+                finished_ms: None,
+            },
+            abort: None,
+            dir: None,
+            from: Some((h.node_id, offer)),
+        });
+        // Already being used from another machine: fetch right away.
+        if self.controlled_by.is_some() {
+            self.start_pending_incoming();
+        }
+    }
+
+    fn start_pending_incoming(&mut self) {
+        let pending: Vec<Uuid> = self
+            .transfers
+            .iter()
+            .filter(|t| t.ui.incoming && t.ui.state == TransferState::Pending)
+            .map(|t| t.ui.id)
+            .collect();
+        for id in pending {
+            self.start_incoming(id);
+        }
+    }
+
+    fn fail_transfer(&mut self, id: Uuid, err: String) {
+        if let Some(t) = self.xfer(id) {
+            t.ui.state = TransferState::Failed;
+            t.ui.error = Some(err.clone());
+            t.ui.finished_ms = Some(now_ms());
+            if let Some(dir) = t.dir.take() {
+                tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir));
+            }
+        }
+        self.log(format!("File transfer failed: {err}"));
+    }
+
+    fn start_incoming(&mut self, id: Uuid) {
+        let Some((node, offer)) = self
+            .xfer(id)
+            .filter(|t| t.ui.incoming && t.ui.state == TransferState::Pending)
+            .and_then(|t| t.from.clone())
+        else {
+            return;
+        };
+        let Some((_, peer)) = self.peer_by_node(node).filter(|(_, p)| p.trusted) else {
+            self.fail_transfer(id, "the machine that copied the files is not connected".into());
+            return;
+        };
+        let Some(port) = peer.hello.as_ref().map(|h| h.port) else { return };
+        let addr = SocketAddr::new(peer.addr.ip(), port);
+        let fingerprint = peer.fingerprint.clone();
+
+        let root = self.opts.download_root.clone().unwrap_or_else(transfer::default_download_root);
+        let dir = match transfer::new_transfer_dir(&root, 4) {
+            Ok(d) => d,
+            Err(e) => {
+                self.fail_transfer(id, format!("cannot create download folder: {e}"));
+                return;
+            }
+        };
+        // No size limit, but there must be room for it.
+        if let Ok(free) = fs4::available_space(&dir) {
+            let need = offer.total + 64 * 1024 * 1024;
+            if free < need {
+                let _ = std::fs::remove_dir_all(&dir);
+                self.fail_transfer(
+                    id,
+                    format!("not enough disk space: needs {}, {} free", human_bytes(offer.total), human_bytes(free)),
+                );
+                return;
+            }
+        }
+
+        let connector = self.connector.clone();
+        let tx = self.xfer_tx.clone();
+        let task_dir = dir.clone();
+        let task = tokio::spawn(async move {
+            let result = async {
+                let mut stream = net::dial_transfer(addr, connector, &fingerprint, id).await?;
+                let mut last = Instant::now();
+                let ptx = tx.clone();
+                transfer::receive(&mut stream, &offer, &task_dir, move |done| {
+                    if last.elapsed() >= Duration::from_millis(150) {
+                        last = Instant::now();
+                        let _ = ptx.send(XferEvent::Progress { id, done });
+                    }
+                })
+                .await
+            }
+            .await;
+            let _ = tx.send(XferEvent::Finished { id, result: result.map(Some).map_err(|e| format!("{e:#}")) });
+        });
+        if let Some(t) = self.xfer(id) {
+            t.ui.state = TransferState::Running;
+            t.ui.started_ms = Some(now_ms());
+            t.abort = Some(task.abort_handle());
+            t.dir = Some(dir);
+        }
+        self.dirty = true;
+    }
+
+    fn on_fetch_request(&mut self, fingerprint: String, id: Uuid, mut stream: net::BoxStream) {
+        let Some(t) = self.cfg.trusted_by_fingerprint(&fingerprint).cloned() else {
+            tracing::warn!("file request from an unpaired machine ignored");
+            return;
+        };
+        let Some(local) = self.local_offer.clone().filter(|l| l.offer.id == id) else {
+            // Stale request (the clipboard changed since): just close it.
+            tokio::spawn(async move {
+                let _ = crate::protocol::write_frame(&mut stream, &Message::FilesError("the clipboard has changed".into())).await;
+            });
+            return;
+        };
+        let tx = self.xfer_tx.clone();
+        // One upload per offer and machine: a retry replaces the old one.
+        let upload_id = Uuid::from_u128(id.as_u128() ^ t.node_id.as_u128());
+        if let Some(old) = self.xfer(upload_id) {
+            if let Some(a) = old.abort.take() {
+                a.abort();
+            }
+        }
+        self.transfers.retain(|x| x.ui.id != upload_id);
+        let task = tokio::spawn(async move {
+            let mut last = Instant::now();
+            let ptx = tx.clone();
+            let result = transfer::send(&mut stream, &local, move |done| {
+                if last.elapsed() >= Duration::from_millis(150) {
+                    last = Instant::now();
+                    let _ = ptx.send(XferEvent::Progress { id: upload_id, done });
+                }
+            })
+            .await;
+            let _ = tx.send(XferEvent::Finished { id: upload_id, result: result.map(|_| None).map_err(|e| format!("{e:#}")) });
+        });
+        let offer = &self.local_offer.as_ref().expect("checked above").offer;
+        let ui = UiTransfer {
+            id: upload_id,
+            incoming: false,
+            peer: t.name.clone(),
+            label: offer.label(),
+            files: offer.file_count(),
+            total: offer.total,
+            done: 0,
+            state: TransferState::Running,
+            error: None,
+            started_ms: Some(now_ms()),
+            finished_ms: None,
+        };
+        self.push_transfer(Xfer { ui, abort: Some(task.abort_handle()), dir: None, from: None });
+    }
+
+    fn on_xfer(&mut self, ev: XferEvent) {
+        match ev {
+            XferEvent::Progress { id, done } => {
+                if let Some(t) = self.xfer(id) {
+                    if t.ui.state == TransferState::Running {
+                        t.ui.done = done;
+                        self.dirty = true;
+                    }
+                }
+            }
+            XferEvent::Finished { id, result } => {
+                let Some(t) = self.xfer(id) else { return };
+                if t.ui.state != TransferState::Running {
+                    return; // cancelled meanwhile
+                }
+                t.abort = None;
+                match result {
+                    Ok(paths) => {
+                        t.ui.state = TransferState::Done;
+                        t.ui.done = t.ui.total;
+                        t.ui.finished_ms = Some(now_ms());
+                        let (label, peer, incoming) = (t.ui.label.clone(), t.ui.peer.clone(), t.ui.incoming);
+                        if let (Some(paths), Some(cb)) = (paths, self.clipboard.clone()) {
+                            self.clip_ignore_until = Instant::now() + Duration::from_millis(1500);
+                            self.clip_pending = None;
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e) = cb.write_files(paths) {
+                                    tracing::warn!("putting files on the clipboard failed: {e}");
+                                }
+                            });
+                            self.log(format!("Received {label} from {peer} — ready to paste"));
+                        } else if !incoming {
+                            self.log(format!("Sent {label} to {peer}"));
+                        }
+                    }
+                    Err(e) if !t.ui.incoming => {
+                        // Usually the receiver cancelled or went away.
+                        tracing::info!("upload to {} stopped: {e}", t.ui.peer);
+                        t.ui.state = TransferState::Cancelled;
+                        t.ui.error = Some(format!("stopped by {}", t.ui.peer));
+                        t.ui.finished_ms = Some(now_ms());
+                    }
+                    Err(e) => self.fail_transfer(id, e),
+                }
+                self.dirty = true;
+            }
+        }
     }
 
     // ------------------------------------------------------------ UI snapshot
@@ -1347,6 +1754,7 @@ impl Engine {
             st.capture_error = self.capture_error.clone();
             st.inject_error = self.inject_error.clone();
             st.log = self.log.iter().cloned().collect();
+            st.transfers = self.transfers.iter().map(|t| t.ui.clone()).collect();
         }
         (self.on_change)();
     }
@@ -1384,17 +1792,22 @@ fn clip_hash(d: &ClipboardData) -> [u8; 32] {
     h.update(d.html.as_deref().unwrap_or("").as_bytes());
     h.update([0]);
     h.update(d.image_png.as_deref().map(|b| b.len().to_le_bytes()).unwrap_or_default());
-    for f in &d.files {
-        h.update(f.rel_path.as_bytes());
-        h.update(f.data.len().to_le_bytes());
-    }
     h.finalize().into()
 }
 
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1000.0 && u < UNITS.len() - 1 {
+        v /= 1000.0;
+        u += 1;
+    }
+    if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+}
+
 fn describe_clip(d: &ClipboardData) -> String {
-    if !d.files.is_empty() {
-        format!("{} file(s)", d.files.iter().filter(|f| !f.is_dir).count())
-    } else if d.image_png.is_some() {
+    if d.image_png.is_some() {
         "image".into()
     } else {
         "text".into()

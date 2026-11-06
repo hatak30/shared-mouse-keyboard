@@ -1,5 +1,7 @@
-//! TLS transport. Each connection gets a reader task feeding [`NetEvent`]s to
-//! the engine and a writer task draining an unbounded message queue.
+//! TLS transport. Each peer connection gets a reader task feeding
+//! [`NetEvent`]s to the engine and a writer task draining an unbounded message
+//! queue. A connection whose first frame is `FetchFiles` is a dedicated file
+//! transfer instead and is handed to the engine as a raw stream.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,9 +19,13 @@ use crate::tls::fingerprint;
 
 pub type ConnId = u64;
 
+/// A TLS stream, type-erased.
+pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
+pub type BoxStream = Box<dyn Stream>;
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug)]
 pub enum NetEvent {
     Connected {
         conn: ConnId,
@@ -34,6 +40,8 @@ pub enum NetEvent {
     /// An outgoing dial to `addr` finished: it failed (`error` set) or the
     /// connection it produced has closed. The address can be dialled again.
     DialEnded { addr: String, error: Option<String> },
+    /// A peer opened a transfer connection asking for the files of offer `id`.
+    FetchRequest { fingerprint: String, id: uuid::Uuid, stream: BoxStream },
 }
 
 pub type EventTx = UnboundedSender<NetEvent>;
@@ -70,8 +78,17 @@ pub async fn listen(port: u16, acceptor: TlsAcceptor, events: EventTx) -> anyhow
                             .peer_certificates()
                             .and_then(|c| c.first())
                             .map(|c| fingerprint(c));
-                        if let Some(fp) = fp {
-                            run_conn(tls, fp, addr, false, events).await;
+                        let Some(fp) = fp else { return };
+                        let mut tls = tls;
+                        // The first frame tells a peer connection from a transfer.
+                        let first = match tokio::time::timeout(Duration::from_secs(10), read_frame(&mut tls)).await {
+                            Ok(Ok(m)) => m,
+                            _ => return,
+                        };
+                        if let Message::FetchFiles { id } = first {
+                            let _ = events.send(NetEvent::FetchRequest { fingerprint: fp, id, stream: Box::new(tls) });
+                        } else {
+                            run_conn(tls, fp, addr, false, Some(first), events).await;
                         }
                     }
                     Ok(Err(e)) => tracing::debug!("TLS accept from {addr} failed: {e}"),
@@ -100,15 +117,45 @@ pub async fn dial(addr: String, connector: TlsConnector, events: EventTx) {
             .and_then(|c| c.first())
             .map(|c| fingerprint(c))
             .ok_or_else(|| anyhow::anyhow!("peer sent no certificate"))?;
-        run_conn(tls, fp, sock_addr, true, events.clone()).await;
+        run_conn(tls, fp, sock_addr, true, None, events.clone()).await;
         Ok(())
     }
     .await;
     let _ = events.send(NetEvent::DialEnded { addr, error: res.err().map(|e| e.to_string()) });
 }
 
-async fn run_conn<S>(stream: S, fp: String, addr: SocketAddr, outbound: bool, events: EventTx)
-where
+/// Open a transfer connection to `addr`, check that the other side is the
+/// machine with fingerprint `expected_fp`, and request the files of offer `id`.
+pub async fn dial_transfer(
+    addr: SocketAddr,
+    connector: TlsConnector,
+    expected_fp: &str,
+    id: uuid::Uuid,
+) -> anyhow::Result<BoxStream> {
+    let tcp = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
+    tcp.set_nodelay(true)?;
+    let name = ServerName::try_from("shared-mouse-keyboard")?;
+    let mut tls = tokio::time::timeout(Duration::from_secs(10), connector.connect(name, tcp)).await??;
+    let fp = tls
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|c| c.first())
+        .map(|c| fingerprint(c))
+        .ok_or_else(|| anyhow::anyhow!("peer sent no certificate"))?;
+    anyhow::ensure!(fp == expected_fp, "the machine at {addr} is not the one that copied the files");
+    write_frame(&mut tls, &Message::FetchFiles { id }).await?;
+    Ok(Box::new(tls))
+}
+
+async fn run_conn<S>(
+    stream: S,
+    fp: String,
+    addr: SocketAddr,
+    outbound: bool,
+    first: Option<Message>,
+    events: EventTx,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let conn = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -123,8 +170,14 @@ where
         }
     });
 
+    // The reader must not deliver anything before the engine has seen
+    // `Connected` (and the first frame), or early messages would be dropped.
+    let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
     let ev = events.clone();
     let reader = tokio::spawn(async move {
+        if go_rx.await.is_err() {
+            return "closed".to_string();
+        }
         loop {
             match read_frame(&mut rd).await {
                 Ok(msg) => {
@@ -145,6 +198,10 @@ where
         tx,
         abort: reader.abort_handle(),
     });
+    if let Some(msg) = first {
+        let _ = events.send(NetEvent::Message { conn, msg });
+    }
+    let _ = go_tx.send(());
 
     let reason = match reader.await {
         Ok(r) => r,

@@ -77,6 +77,21 @@ fn set_name(app: State<App>, name: String) {
 }
 
 #[tauri::command]
+fn start_transfer(app: State<App>, id: Uuid) {
+    app.engine.send(Command::StartTransfer(id));
+}
+
+#[tauri::command]
+fn cancel_transfer(app: State<App>, id: Uuid) {
+    app.engine.send(Command::CancelTransfer(id));
+}
+
+#[tauri::command]
+fn dismiss_transfer(app: State<App>, id: Uuid) {
+    app.engine.send(Command::DismissTransfer(id));
+}
+
+#[tauri::command]
 fn return_home(app: State<App>) {
     app.engine.send(Command::ReturnHome);
 }
@@ -362,6 +377,9 @@ fn main() {
             set_settings,
             set_name,
             return_home,
+            start_transfer,
+            cancel_transfer,
+            dismiss_transfer,
             request_permission,
             open_permission_settings,
             refresh_permissions,

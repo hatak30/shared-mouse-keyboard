@@ -96,6 +96,20 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 form.row { display: flex; }
 form.row input { flex: 1; max-width: 360px; }
 
+/* File transfers */
+.transfers { padding: 0 22px; display: flex; flex-direction: column; gap: 8px; }
+.transfers:not(:empty) { margin-top: 12px; }
+.xfer { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center; padding: 10px 14px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); }
+.xfer .icon { font-size: 20px; grid-row: span 2; }
+.xfer .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xfer .sub { font-size: 12px; color: var(--muted); grid-column: 2; }
+.xfer .buttons { grid-row: span 2; display: flex; gap: 6px; }
+.xfer .bar { grid-column: 2; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.xfer .bar > div { height: 100%; background: var(--accent); transition: width .2s; }
+.xfer.done { border-color: var(--ok); }
+.xfer.failed { border-color: var(--bad); }
+.xfer.failed .sub { color: var(--bad); }
+
 /* Layout grid */
 .grid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; overflow: auto; }
 .grid { position: relative; display: grid; gap: 0; margin: 0 auto; width: max-content; }

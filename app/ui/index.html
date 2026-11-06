@@ -27,6 +27,7 @@
       <button id="update-later" class="btn small">Later</button>
     </span>
   </div>
+  <div id="transfers" class="transfers"></div>
   <div id="alerts"></div>
 
   <nav class="tabs" role="tablist">
@@ -120,9 +121,9 @@
         <fieldset>
           <legend>Clipboard</legend>
           <label class="check"><input type="checkbox" name="clipboard_enabled" /> Share clipboard (text, rich text, images)</label>
-          <label class="check"><input type="checkbox" name="clipboard_files_enabled" /> Share copied files</label>
-          <label class="field">Maximum size of copied files
-            <span class="row"><input type="number" name="clipboard_max_file_mb" min="1" max="2000" step="1" /> MB</span></label>
+          <label class="check"><input type="checkbox" name="clipboard_files_enabled" /> Share copied files and folders</label>
+          <p class="muted small">Any size. Only the list of files is shared when you copy; the contents are streamed to the
+            machine you move the cursor to, with progress shown at the top of this window.</p>
         </fieldset>
         <fieldset>
           <legend>Keyboard</legend>

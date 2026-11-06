@@ -14,5 +14,6 @@ pub mod net;
 pub mod permissions;
 pub mod protocol;
 pub mod tls;
+pub mod transfer;
 
 pub use engine::{start, Command, EngineHandle, StartOptions, UiState};

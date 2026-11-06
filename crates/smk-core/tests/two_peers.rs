@@ -13,6 +13,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 async fn engine(port: u16, screen: Rect) -> (EngineHandle, UnboundedReceiver<InputEvent>) {
     let dir = std::env::temp_dir().join(format!("smk-test-{}", uuid::Uuid::new_v4()));
+    let downloads = dir.join("downloads");
     let (tx, rx) = unbounded_channel();
     let opts = StartOptions {
         config_dir: dir,
@@ -23,6 +24,7 @@ async fn engine(port: u16, screen: Rect) -> (EngineHandle, UnboundedReceiver<Inp
         screen: Some(screen),
         inject_sink: Some(tx),
         read_only: false,
+        download_root: Some(downloads),
     };
     let h = smk_core::start(opts, Arc::new(|| {})).await.expect("engine starts");
     (h, rx)
@@ -174,4 +176,98 @@ async fn rejecting_pairing_clears_both_sides() {
     wait_until("A no longer pairing", || peer(&a.state(), "beta").is_some_and(|p| p.pairing.is_none())).await;
     assert!(!peer(&a.state(), "beta").unwrap().trusted);
     assert!(!peer(&b.state(), "alpha").unwrap().trusted);
+}
+
+/// Connect and pair two engines, with B placed to the right of A.
+async fn paired(pa: u16, pb: u16) -> (EngineHandle, EngineHandle, UnboundedReceiver<InputEvent>) {
+    let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
+    let (a, _ra) = engine(pa, screen).await;
+    let (b, rb) = engine(pb, screen).await;
+    a.send(Command::SetName("alpha".into()));
+    b.send(Command::SetName("beta".into()));
+    a.send(Command::Connect(format!("127.0.0.1:{pb}")));
+    wait_until("connected", || {
+        peer(&a.state(), "beta").is_some_and(|p| p.connected) && peer(&b.state(), "alpha").is_some_and(|p| p.connected)
+    })
+    .await;
+    let (a_id, b_id) = (a.state().me.node_id, b.state().me.node_id);
+    a.send(Command::Pair(b_id));
+    let mut code = String::new();
+    wait_until("code", || match peer(&b.state(), "alpha").and_then(|p| p.pairing.clone()) {
+        Some(UiPairing::ShowCode { code: c }) => {
+            code = c;
+            true
+        }
+        _ => false,
+    })
+    .await;
+    a.send(Command::SubmitCode(b_id, code));
+    wait_until("trusted", || peer(&b.state(), "alpha").is_some_and(|p| p.trusted)).await;
+    a.send(Command::SetLayout(Layout {
+        version: 0,
+        placements: vec![
+            Placement { node_id: a_id, name: "alpha".into(), x: 0, y: 0 },
+            Placement { node_id: b_id, name: "beta".into(), x: 1, y: 0 },
+        ],
+    }));
+    wait_until("layout", || b.state().layout.position(b_id) == Some((1, 0))).await;
+    (a, b, rb)
+}
+
+fn transfer_on(s: &UiState, incoming: bool) -> Option<smk_core::engine::UiTransfer> {
+    s.transfers.iter().find(|t| t.incoming == incoming).cloned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn copied_folder_streams_when_cursor_arrives() {
+    use smk_core::engine::TransferState;
+    let (a, b, _rb) = paired(25831, 25832).await;
+
+    // A folder with a multi-chunk file.
+    let src = std::env::temp_dir().join(format!("smk-src-{}", uuid::Uuid::new_v4())).join("Album");
+    std::fs::create_dir_all(src.join("raw")).unwrap();
+    let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(src.join("raw/photo.bin"), &big).unwrap();
+    std::fs::write(src.join("notes.txt"), b"hi").unwrap();
+
+    a.send(Command::OfferFiles(vec![src.clone()]));
+    // B only gets the list for now.
+    wait_until("B has a pending offer", || {
+        transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Pending && t.label == "Album" && t.files == 2)
+    })
+    .await;
+
+    // Moving the cursor onto B starts the download there.
+    a.simulate_input(CapturedEvent::Motion { x: 1279.0, y: 300.0, dx: 5.0, dy: 0.0 });
+    wait_until("download finished", || transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Done)).await;
+    wait_until("upload shown as done", || transfer_on(&a.state(), false).is_some_and(|t| t.state == TransferState::Done)).await;
+
+    let t = transfer_on(&b.state(), true).unwrap();
+    assert_eq!(t.done, t.total);
+    assert_eq!(t.total, big.len() as u64 + 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_download_stops_it() {
+    use smk_core::engine::TransferState;
+    let (a, b, _rb) = paired(25841, 25842).await;
+    let src = std::env::temp_dir().join(format!("smk-src-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&src).unwrap();
+    let file = src.join("huge.bin");
+    // Sparse 20 GB file: instant to create, far too big to finish in the test.
+    std::fs::File::create(&file).unwrap().set_len(20_000_000_000).unwrap();
+
+    a.send(Command::OfferFiles(vec![file]));
+    let mut id = None;
+    wait_until("offer", || {
+        id = transfer_on(&b.state(), true).map(|t| t.id);
+        id.is_some()
+    })
+    .await;
+    b.send(Command::StartTransfer(id.unwrap()));
+    wait_until("some progress", || transfer_on(&b.state(), true).is_some_and(|t| t.done > 0)).await;
+    b.send(Command::CancelTransfer(id.unwrap()));
+    wait_until("cancelled", || transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Cancelled)).await;
+    let done = transfer_on(&b.state(), true).unwrap().done;
+    assert!(done < 20_000_000_000);
 }

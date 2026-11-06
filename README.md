@@ -60,7 +60,7 @@ The app checks these at runtime and explains each one on the Permissions tab.
 - **Local Network.** macOS asks on first launch (macOS 15+). If you declined, go to System Settings → Privacy & Security → Local Network.
 - The firewall may also ask whether to accept incoming connections. Click **Allow**.
 
-> macOS ties these permissions to the app's code signature. Development builds are re-signed on every build, so you may have to toggle the permissions off and on again after rebuilding. Release bundles are ad-hoc signed (`signingIdentity: "-"`). For distribution, sign and notarize with a Developer ID.
+> macOS ties these permissions to the app's code signature. Build with `scripts/build-macos.sh` (`--install` also copies the app to /Applications and launches it). It signs with the first **Developer ID Application** certificate in your keychain, which keeps permissions across updates. Ad-hoc signed builds (no certificate) lose them on every rebuild. Set `APPLE_ID`, `APPLE_PASSWORD` (app-specific password) and `APPLE_TEAM_ID` to notarize as well, so other Macs open the app without a Gatekeeper warning.
 
 ### Windows
 - **Firewall.** Windows asks on first start. Allow access on **private** networks.

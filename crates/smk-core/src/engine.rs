@@ -528,7 +528,6 @@ impl Engine {
     fn on_net(&mut self, ev: NetEvent) {
         match ev {
             NetEvent::Connected { conn, fingerprint, addr, outbound, tx, abort } => {
-                self.dialing.retain(|a| !addr_matches(a, &addr));
                 let trusted = self.cfg.trusted_by_fingerprint(&fingerprint).is_some();
                 let peer = Peer {
                     tx,
@@ -562,9 +561,13 @@ impl Engine {
                 }
                 self.dirty = true;
             }
-            NetEvent::DialFailed { addr, reason } => {
+            NetEvent::DialEnded { addr, error } => {
+                // Keeping the address in `dialing` while its connection lives
+                // prevents duplicate dials; it is released only here.
                 self.dialing.remove(&addr);
-                tracing::debug!("dial {addr} failed: {reason}");
+                if let Some(e) = error {
+                    tracing::debug!("dial {addr} failed: {e}");
+                }
             }
             NetEvent::Message { conn, msg } => self.on_message(conn, msg),
         }
@@ -675,12 +678,15 @@ impl Engine {
         let trusted = peer.trusted;
         let name = h.name.clone();
         let layout = h.layout.clone();
-        peer.hello = Some(h);
+        // A repeated Hello (e.g. after a rename) only updates details.
+        let first = peer.hello.replace(h).is_none();
         if trusted {
-            self.log(format!("Connected to {name}"));
+            if first {
+                self.log(format!("Connected to {name}"));
+            }
             self.adopt_layout(layout);
             self.save();
-        } else {
+        } else if first {
             self.log(format!("Found {name} (not paired)"));
         }
         self.dirty = true;

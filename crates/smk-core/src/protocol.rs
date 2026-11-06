@@ -157,7 +157,29 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> any
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> anyhow::Result<Message> {
     let len = r.read_u32().await? as usize;
     anyhow::ensure!(len <= MAX_FRAME, "frame too large: {len}");
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
+    // Grow the buffer as data actually arrives instead of trusting the
+    // length prefix, so an unauthenticated peer cannot make us allocate
+    // hundreds of MB by sending a 4-byte header.
+    let mut buf = Vec::with_capacity(len.min(64 * 1024));
+    let n = (&mut *r).take(len as u64).read_to_end(&mut buf).await?;
+    anyhow::ensure!(n == len, "connection closed mid-frame");
     Ok(bincode::deserialize(&buf)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frame_roundtrip_and_truncated_header() {
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        write_frame(&mut a, &Message::Ping).await.unwrap();
+        assert!(matches!(read_frame(&mut b).await.unwrap(), Message::Ping));
+
+        // A header promising 400 MB followed by EOF must fail cleanly.
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        a.write_u32(400 * 1024 * 1024).await.unwrap();
+        drop(a);
+        assert!(read_frame(&mut b).await.is_err());
+    }
 }

@@ -138,6 +138,9 @@ fn main() {
     let start_hidden = std::env::args().any(|a| a == "--hidden");
 
     tauri::Builder::default()
+        // Must be registered first: a second launch (e.g. opening the app
+        // while the login item is already running) just shows the window.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         // Started at login with --hidden: run quietly in the tray.
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .setup(move |app| {

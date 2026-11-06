@@ -31,7 +31,9 @@ pub enum NetEvent {
     },
     Message { conn: ConnId, msg: Message },
     Closed { conn: ConnId, reason: String },
-    DialFailed { addr: String, reason: String },
+    /// An outgoing dial to `addr` finished: it failed (`error` set) or the
+    /// connection it produced has closed. The address can be dialled again.
+    DialEnded { addr: String, error: Option<String> },
 }
 
 pub type EventTx = UnboundedSender<NetEvent>;
@@ -88,9 +90,7 @@ pub async fn dial(addr: String, connector: TlsConnector, events: EventTx) {
         Ok(())
     }
     .await;
-    if let Err(e) = res {
-        let _ = events.send(NetEvent::DialFailed { addr, reason: e.to_string() });
-    }
+    let _ = events.send(NetEvent::DialEnded { addr, error: res.err().map(|e| e.to_string()) });
 }
 
 async fn run_conn<S>(stream: S, fp: String, addr: SocketAddr, outbound: bool, events: EventTx)

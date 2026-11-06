@@ -92,20 +92,23 @@ function renderHeader() {
   $("#me-meta").textContent = `· ${OS_LABEL[state.me.os] || ""} · ${screenText(state.me.screen)} · port ${state.me.port}`;
   $("#fingerprint").textContent = state.me.fingerprint.match(/.{1,4}/g).join(" ");
 
-  const st = $("#status");
-  st.className = "status";
-  st.replaceChildren();
+  // Rebuild only when the text changes, so the pill doesn't flicker.
+  let cls = "status", text, back = false;
   if (state.controlling) {
-    st.classList.add("remote");
-    st.append(el("span", { class: "dot" }), `Controlling ${state.controlling}`,
-      el("button", { class: "btn small", onclick: () => call("return_home") }, "Bring cursor back"));
+    cls += " remote"; text = `Controlling ${state.controlling}`; back = true;
   } else if (state.controlled_by) {
-    st.classList.add("controlled");
-    st.append(el("span", { class: "dot" }), `Controlled by ${state.controlled_by}`);
+    cls += " controlled"; text = `Controlled by ${state.controlled_by}`;
   } else {
     const online = state.peers.filter((p) => p.trusted && p.connected).length;
-    st.append(el("span", { class: "dot" }), online ? `Ready · ${online} machine${online > 1 ? "s" : ""} online` : "Ready · no paired machines online");
+    text = online ? `Ready · ${online} machine${online > 1 ? "s" : ""} online` : "Ready · no machines online";
   }
+  if (!sameSig("status", [cls, text])) {
+    const st = $("#status");
+    st.className = cls;
+    st.replaceChildren(el("span", { class: "dot" }), el("span", { class: "text", title: text }, text));
+    if (back) st.append(el("button", { class: "btn small", onclick: () => call("return_home") }, "Bring cursor back"));
+  }
+
 
   if (!sameSig("alerts", [state.capture_error, state.inject_error, state.permissions.map((p) => p.granted)])) {
     const alerts = $("#alerts");
@@ -416,11 +419,14 @@ function renderPermissions() {
       el("div", { class: "head" }, el("span", { class: "name" }, p.name), pill),
       el("p", { class: "muted" }, p.help), buttons.childElementCount ? buttons : null));
   }
-  const status = (ok, label, err) => el("div", { class: "card" },
-    el("div", { class: "head" }, el("span", { class: "name" }, label), el("span", { class: ok ? "pill ok" : "pill bad" }, ok ? "Working" : "Not working")),
-    err ? el("p", { class: "muted" }, err) : el("p", { class: "muted" }, "OK"));
-  box.append(status(!state.capture_error, "Capture this machine's mouse & keyboard", state.capture_error));
-  box.append(status(!state.inject_error, "Receive input from other machines", state.inject_error));
+  // What actually happens, independent of what the OS reports as granted.
+  const row = (ok, label, err) => el("div", { class: "status-row" },
+    el("span", { class: "name" }, label),
+    el("span", { class: ok ? "pill ok" : "pill bad" }, ok ? "Working" : "Not working"),
+    err ? el("p", { class: "err" }, err) : null);
+  $("#perm-status").replaceChildren(
+    row(!state.capture_error, "Capture this machine's mouse & keyboard", state.capture_error),
+    row(!state.inject_error, "Receive input from other machines", state.inject_error));
 }
 $("#perm-refresh").addEventListener("click", () => call("refresh_permissions"));
 

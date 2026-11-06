@@ -56,7 +56,10 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .linklike { background: none; border: none; padding: 0; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
 .linklike:hover { text-decoration: underline; }
 
-.status { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 999px; background: var(--accent-soft); font-weight: 550; }
+.status { display: flex; align-items: center; gap: 10px; height: 34px; box-sizing: border-box; padding: 0 14px; min-width: 240px; max-width: 420px; flex-shrink: 0; border-radius: 999px; background: var(--accent-soft); font-weight: 550; white-space: nowrap; }
+.status .text { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.status .dot { flex-shrink: 0; }
+.status .btn.small { padding: 2px 10px; }
 .status .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
 .status.remote .dot { background: var(--accent); }
 .status.controlled .dot { background: var(--warn); }
@@ -145,6 +148,15 @@ form.row input { flex: 1; max-width: 360px; }
 .pill.accent { background: var(--accent-soft); color: var(--accent); }
 .card .details { margin: 8px 0; font-size: 12px; color: var(--muted); display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
 .card .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+/* Permissions: equal-height cards with the button pinned to the bottom. */
+.perm-cards .card { display: flex; flex-direction: column; }
+.perm-cards .card p { margin: 8px 0 0; font-size: 13px; line-height: 1.45; }
+.perm-cards .card .buttons { margin-top: auto; padding-top: 12px; }
+.status-list { margin-bottom: 12px; padding: 4px 16px; }
+.status-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 10px 0; }
+.status-row + .status-row { border-top: 1px solid var(--border); }
+.status-row .name { font-weight: 600; }
+.status-row .err { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--bad); }
 .code-entry { margin-top: 10px; padding: 10px; border-radius: 8px; background: var(--accent-soft); }
 .code-entry input { width: 130px; letter-spacing: .3em; font-size: 18px; text-align: center; font-family: ui-monospace, Menlo, monospace; }
 .code-entry .err { color: var(--bad); font-size: 12px; margin-top: 6px; }

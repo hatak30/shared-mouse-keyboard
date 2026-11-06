@@ -9,6 +9,7 @@ use smk_core::layout::Layout;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use uuid::Uuid;
 
 struct App {
@@ -90,6 +91,34 @@ fn refresh_permissions(app: State<App>) {
     app.engine.send(Command::RefreshPermissions);
 }
 
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> R<bool> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> R<()> {
+    let al = app.autolaunch();
+    if enabled { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
+}
+
+/// Turn on start-at-login the first time the app runs; afterwards the
+/// user's choice in Settings is respected.
+fn init_autostart(app: &AppHandle) {
+    let marker = smk_core::config::Config::default_dir().join("autostart-initialized");
+    if marker.exists() {
+        return;
+    }
+    match app.autolaunch().enable() {
+        Ok(()) => {
+            let _ = std::fs::create_dir_all(marker.parent().unwrap());
+            let _ = std::fs::write(&marker, b"");
+            tracing::info!("enabled start at login");
+        }
+        Err(e) => tracing::warn!("could not enable start at login: {e}"),
+    }
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -109,8 +138,11 @@ fn main() {
     let start_hidden = std::env::args().any(|a| a == "--hidden");
 
     tauri::Builder::default()
+        // Started at login with --hidden: run quietly in the tray.
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .setup(move |app| {
             let handle = app.handle().clone();
+            init_autostart(&handle);
             let notify_handle = handle.clone();
             let on_change = Arc::new(move || {
                 let _ = notify_handle.emit("state-changed", ());
@@ -183,6 +215,8 @@ fn main() {
             request_permission,
             open_permission_settings,
             refresh_permissions,
+            get_autostart,
+            set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

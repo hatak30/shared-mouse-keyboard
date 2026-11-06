@@ -457,7 +457,22 @@ function collectSettings() {
     fallback_screen: [Math.round(num("fallback_w", 1920)), Math.round(num("fallback_h", 1080))],
   };
 }
-settingsForm.addEventListener("change", () => call("set_settings", { settings: collectSettings() }));
+settingsForm.addEventListener("change", (e) => {
+  if (e.target.id === "autostart") return; // handled separately below
+  call("set_settings", { settings: collectSettings() });
+});
+
+// Start at login (managed by the OS, not part of the engine settings).
+const autostartBox = $("#autostart");
+async function loadAutostart() {
+  const on = await call("get_autostart");
+  if (typeof on === "boolean") autostartBox.checked = on;
+}
+autostartBox.addEventListener("change", async () => {
+  await call("set_autostart", { enabled: autostartBox.checked });
+  loadAutostart();
+});
+loadAutostart();
 settingsForm.elements.pointer_speed.addEventListener("input", (e) => {
   $("#speed-out").textContent = `${Number(e.target.value).toFixed(2)}×`;
 });

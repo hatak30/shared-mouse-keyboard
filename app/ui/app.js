@@ -504,6 +504,62 @@ $("#rename-form").addEventListener("submit", (e) => {
   $("#rename-modal").classList.add("hidden");
 });
 
+// ------------------------------------------------------------------ updates
+
+let updateDismissed = null;
+function showUpdate(info) {
+  const banner = $("#update-banner");
+  if (!info || updateDismissed === info.version) {
+    banner.classList.add("hidden");
+    return;
+  }
+  $("#update-text").textContent = `Version ${info.version} is available (you have ${info.current}).`;
+  banner.classList.remove("hidden");
+}
+$("#update-later").addEventListener("click", async () => {
+  const info = await call("get_update");
+  updateDismissed = info && info.version;
+  showUpdate(null);
+});
+$("#update-install").addEventListener("click", async () => {
+  $("#update-install").disabled = true;
+  $("#update-later").disabled = true;
+  $("#update-progress").classList.remove("hidden");
+  $("#update-text").textContent = "Downloading update…";
+  try {
+    await invoke("install_update"); // the app restarts when done
+  } catch (e) {
+    showToast(`Update failed: ${e}`);
+    $("#update-install").disabled = false;
+    $("#update-later").disabled = false;
+    $("#update-progress").classList.add("hidden");
+  }
+});
+$("#update-check").addEventListener("click", async () => {
+  const status = $("#update-status");
+  status.textContent = "Checking…";
+  try {
+    const info = await invoke("check_update");
+    status.textContent = info ? `Version ${info.version} is available.` : "You have the latest version.";
+    updateDismissed = null;
+    showUpdate(info);
+  } catch (e) {
+    status.textContent = `Could not check: ${e}`;
+  }
+});
+listen("update-available", (e) => showUpdate(e.payload));
+listen("update-progress", (e) => {
+  const [done, total] = e.payload;
+  const bar = $("#update-progress");
+  if (total) {
+    bar.max = total;
+    bar.value = done;
+    $("#update-text").textContent = `Downloading update… ${Math.round((done / total) * 100)}%`;
+  }
+});
+call("app_version").then((v) => ($("#app-version").textContent = v || ""));
+call("get_update").then(showUpdate);
+
 // ------------------------------------------------------------------ main loop
 
 function render() {

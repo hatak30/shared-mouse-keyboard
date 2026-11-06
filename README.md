@@ -127,7 +127,23 @@ Linux build dependencies (Debian/Ubuntu):
 sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev build-essential
 ```
 
-GitHub Actions (`.github/workflows/build.yml`) builds and tests on all three platforms and uploads the installers as artifacts.
+GitHub Actions runs lint checks and tests on all three platforms for every push (`.github/workflows/ci.yml`).
+
+### Releases and automatic updates
+
+Installers for every platform are published on the [Releases page](https://github.com/hatak30/shared-mouse-keyboard/releases). The app checks GitHub for a newer release at startup and every 6 hours. When one exists, it shows **Version X is available → Install & restart**. You can also check by hand under **Settings → Updates**.
+
+- Every update is verified against the public key built into the app (`plugins.updater.pubkey` in `app/tauri.conf.json`). Updates signed with a different key are rejected.
+- macOS releases are signed with the same Developer ID, so Accessibility and Input Monitoring permissions survive updates.
+- Windows updates run the installer in passive mode. On Linux, only the **AppImage** updates itself. `.deb`/`.rpm` installs need the new package installed manually.
+
+To publish a version (maintainers):
+
+```sh
+scripts/release.sh 0.2.0     # bumps versions, commits, tags v0.2.0, pushes
+```
+
+`.github/workflows/release.yml` then builds and signs on macOS (universal), Windows and Linux. It publishes the release together with `latest.json`, which installed apps poll. The secrets it needs are listed at the top of the workflow. The update-signing key lives in `~/.tauri/shared-mouse-keyboard-updater.key` (with its `.password` file); back it up, because without it you can't ship updates to existing installs.
 
 ### Tests
 

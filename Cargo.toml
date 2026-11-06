@@ -6,6 +6,7 @@ members = ["crates/smk-core", "app"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/hatak30/shared-mouse-keyboard"
 
 [workspace.dependencies]
 smk-core = { path = "crates/smk-core" }

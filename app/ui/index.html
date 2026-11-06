@@ -19,6 +19,14 @@
     <div id="status" class="status"></div>
   </header>
 
+  <div id="update-banner" class="alert update hidden">
+    <span id="update-text"></span>
+    <span class="actions">
+      <progress id="update-progress" class="hidden" max="1" value="0"></progress>
+      <button id="update-install" class="btn primary small">Install &amp; restart</button>
+      <button id="update-later" class="btn small">Later</button>
+    </span>
+  </div>
   <div id="alerts"></div>
 
   <nav class="tabs" role="tablist">
@@ -92,6 +100,13 @@
     <section id="tab-settings" class="panel">
       <div class="panel-head"><div><h2>Settings</h2></div></div>
       <form id="settings" class="settings">
+        <fieldset>
+          <legend>Updates</legend>
+          <p>Installed version: <strong id="app-version"></strong></p>
+          <span class="row"><button type="button" id="update-check" class="btn">Check for updates</button>
+            <span id="update-status" class="muted small"></span></span>
+          <p class="muted small">New versions are checked automatically from GitHub and installed only when you click Install.</p>
+        </fieldset>
         <fieldset>
           <legend>Startup</legend>
           <label class="check"><input type="checkbox" id="autostart" /> Start automatically when I log in</label>

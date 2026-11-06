@@ -24,6 +24,13 @@ if [[ -z "$APPLE_SIGNING_IDENTITY" ]]; then
   APPLE_SIGNING_IDENTITY="-"
 fi
 export APPLE_SIGNING_IDENTITY
+
+# Update artifacts must be signed with the updater key (see README).
+KEY="$HOME/.tauri/shared-mouse-keyboard-updater.key"
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "$KEY" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$KEY.password")"
+fi
 echo "Signing with: $APPLE_SIGNING_IDENTITY"
 
 cargo tauri build --bundles app

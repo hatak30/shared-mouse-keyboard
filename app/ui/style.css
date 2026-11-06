@@ -63,6 +63,8 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 
 #alerts { padding: 0 22px; }
 .alert { margin-top: 12px; padding: 10px 14px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.alert.update { margin: 12px 22px 0; background: var(--accent-soft); color: var(--text); }
+.alert.update progress { width: 140px; }
 .alert.bad { background: var(--bad-soft); color: var(--bad); }
 
 .tabs { display: flex; gap: 4px; padding: 12px 22px 0; border-bottom: 1px solid var(--border); }

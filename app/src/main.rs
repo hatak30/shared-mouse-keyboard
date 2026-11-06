@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Arc;
+use std::time::Duration;
+
+use serde::Serialize;
 
 use smk_core::config::Settings;
 use smk_core::engine::{Command, EngineHandle, UiState};
@@ -10,6 +13,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_updater::UpdaterExt;
 use uuid::Uuid;
 
 struct App {
@@ -119,6 +123,109 @@ fn init_autostart(app: &AppHandle) {
     }
 }
 
+// ------------------------------------------------------------------ updates
+
+#[derive(Clone, Serialize)]
+struct UpdateInfo {
+    current: String,
+    version: String,
+    notes: Option<String>,
+}
+
+#[derive(Default)]
+struct UpdateState {
+    available: parking_lot::Mutex<Option<UpdateInfo>>,
+    installing: std::sync::atomic::AtomicBool,
+}
+
+async fn check_for_update(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?;
+    let info = update.map(|u| UpdateInfo {
+        current: u.current_version.clone(),
+        version: u.version.clone(),
+        notes: u.body.clone(),
+    });
+    *app.state::<UpdateState>().available.lock() = info.clone();
+    if let Some(i) = &info {
+        tracing::info!("update available: {} -> {}", i.current, i.version);
+        let _ = app.emit("update-available", i.clone());
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+fn get_update(state: State<UpdateState>) -> Option<UpdateInfo> {
+    state.available.lock().clone()
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> R<Option<UpdateInfo>> {
+    check_for_update(&app).await
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> R<()> {
+    use std::sync::atomic::Ordering;
+    let state = app.state::<UpdateState>();
+    if state.installing.swap(true, Ordering::SeqCst) {
+        return Err("an update is already being installed".into());
+    }
+    let result: R<()> = async {
+        let update = app
+            .updater()
+            .map_err(|e| e.to_string())?
+            .check()
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("already up to date")?;
+        let progress_app = app.clone();
+        let mut downloaded = 0u64;
+        update
+            .download_and_install(
+                move |chunk, total| {
+                    downloaded += chunk as u64;
+                    let _ = progress_app.emit("update-progress", (downloaded, total));
+                },
+                || {},
+            )
+            .await
+            .map_err(|e| e.to_string())
+    }
+    .await;
+    if let Err(e) = result {
+        state.installing.store(false, Ordering::SeqCst);
+        return Err(e);
+    }
+    // Give the cursor back before the app goes away for a moment.
+    app.state::<App>().engine.send(Command::ReturnHome);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    app.restart();
+}
+
+/// Check shortly after start and then every 6 hours. Installing is left to
+/// the user ("Install & restart" in the control panel).
+fn spawn_update_checker(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        loop {
+            if let Err(e) = check_for_update(&app).await {
+                tracing::warn!("update check failed: {e}");
+            }
+            tokio::time::sleep(Duration::from_secs(6 * 60 * 60)).await;
+        }
+    });
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -142,10 +249,14 @@ fn main() {
         // while the login item is already running) just shows the window.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         // Started at login with --hidden: run quietly in the tray.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .manage(UpdateState::default())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .setup(move |app| {
             let handle = app.handle().clone();
             init_autostart(&handle);
+            spawn_update_checker(handle.clone());
             let notify_handle = handle.clone();
             let on_change = Arc::new(move || {
                 let _ = notify_handle.emit("state-changed", ());
@@ -220,6 +331,10 @@ fn main() {
             refresh_permissions,
             get_autostart,
             set_autostart,
+            app_version,
+            get_update,
+            check_update,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

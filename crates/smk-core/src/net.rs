@@ -38,10 +38,24 @@ pub enum NetEvent {
 
 pub type EventTx = UnboundedSender<NetEvent>;
 
+/// Listen for peers. If the port is taken (e.g. the macOS login-screen
+/// helper is still shutting down) keep retrying in the background.
 pub async fn listen(port: u16, acceptor: TlsAcceptor, events: EventTx) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!("listening on port {port}");
     tokio::spawn(async move {
+        let mut warned = false;
+        let listener = loop {
+            match TcpListener::bind(("0.0.0.0", port)).await {
+                Ok(l) => break l,
+                Err(e) => {
+                    if !warned {
+                        tracing::warn!("port {port} unavailable ({e}); retrying");
+                        warned = true;
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        };
+        tracing::info!("listening on port {port}");
         loop {
             let Ok((tcp, addr)) = listener.accept().await else { continue };
             let acceptor = acceptor.clone();

@@ -117,6 +117,9 @@ pub struct StartOptions {
     pub screen: Option<Rect>,
     /// Receives events that would otherwise be injected (tests).
     pub inject_sink: Option<UnboundedSender<InputEvent>>,
+    /// Use the existing config/identity without ever writing them
+    /// (macOS login-screen helper).
+    pub read_only: bool,
 }
 
 impl Default for StartOptions {
@@ -129,6 +132,7 @@ impl Default for StartOptions {
             discovery: true,
             screen: None,
             inject_sink: None,
+            read_only: false,
         }
     }
 }
@@ -248,11 +252,11 @@ fn is_mac(os: Os) -> bool {
 
 /// Start the engine on the current Tokio runtime.
 pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Result<EngineHandle> {
-    let mut cfg = Config::load_or_create(&opts.config_dir)?;
+    let mut cfg = Config::load_or_create(&opts.config_dir, opts.read_only)?;
     if let Some(p) = opts.port {
         cfg.port = p;
     }
-    let identity = Arc::new(Identity::load_or_create(&opts.config_dir)?);
+    let identity = Arc::new(Identity::load_or_create(&opts.config_dir, opts.read_only)?);
     let (net_tx, net_rx) = unbounded_channel();
     let (cmd_tx, cmd_rx) = unbounded_channel();
     let (capture_tx, capture_rx) = unbounded_channel();

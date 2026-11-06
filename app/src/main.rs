@@ -1,6 +1,8 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod login_screen;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,6 +125,34 @@ fn init_autostart(app: &AppHandle) {
     }
 }
 
+// ------------------------------------------------------------------ login screen
+
+#[tauri::command]
+fn get_login_screen() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    return Some(login_screen::is_installed());
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+#[tauri::command]
+async fn set_login_screen(enabled: bool) -> R<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let dir = smk_core::config::Config::default_dir();
+        tauri::async_runtime::spawn_blocking(move || {
+            if enabled { login_screen::install(&dir) } else { login_screen::uninstall() }
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = enabled;
+        Err("Login screen support is currently available on macOS only.".into())
+    }
+}
+
 // ------------------------------------------------------------------ updates
 
 #[derive(Clone, Serialize)]
@@ -242,6 +272,12 @@ fn main() {
         )
         .init();
 
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|a| a == login_screen::ARG) {
+        login_screen::run_agent();
+        return;
+    }
+
     let start_hidden = std::env::args().any(|a| a == "--hidden");
 
     tauri::Builder::default()
@@ -331,6 +367,8 @@ fn main() {
             refresh_permissions,
             get_autostart,
             set_autostart,
+            get_login_screen,
+            set_login_screen,
             app_version,
             get_update,
             check_update,

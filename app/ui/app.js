@@ -458,7 +458,7 @@ function collectSettings() {
   };
 }
 settingsForm.addEventListener("change", (e) => {
-  if (e.target.id === "autostart") return; // handled separately below
+  if (e.target.id === "autostart" || e.target.id === "login-screen") return; // handled separately
   call("set_settings", { settings: collectSettings() });
 });
 
@@ -471,6 +471,25 @@ async function loadAutostart() {
 autostartBox.addEventListener("change", async () => {
   await call("set_autostart", { enabled: autostartBox.checked });
   loadAutostart();
+
+// Login screen helper (macOS only; the command returns null elsewhere).
+const loginBox = $("#login-screen");
+async function loadLoginScreen() {
+  const on = await call("get_login_screen");
+  $("#login-screen-row").classList.toggle("hidden", typeof on !== "boolean");
+  if (typeof on === "boolean") loginBox.checked = on;
+}
+loginBox.addEventListener("change", async () => {
+  loginBox.disabled = true;
+  try {
+    await invoke("set_login_screen", { enabled: loginBox.checked });
+  } catch (e) {
+    if (String(e) !== "cancelled") showToast(String(e));
+  }
+  loginBox.disabled = false;
+  loadLoginScreen();
+});
+loadLoginScreen();
 });
 loadAutostart();
 settingsForm.elements.pointer_speed.addEventListener("input", (e) => {

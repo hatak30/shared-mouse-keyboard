@@ -70,6 +70,10 @@ pub struct Config {
     /// Directory this config was loaded from (not serialized).
     #[serde(skip)]
     pub dir: PathBuf,
+    /// Never write to disk (macOS login-screen helper runs as root and must
+    /// not take ownership of the user's files).
+    #[serde(skip)]
+    pub read_only: bool,
 }
 
 impl Default for Config {
@@ -88,6 +92,7 @@ impl Default for Config {
             manual_peers: Vec::new(),
             settings: Settings::default(),
             dir: Self::default_dir(),
+            read_only: false,
         }
     }
 }
@@ -107,8 +112,15 @@ impl Config {
         self.dir.join("config.json")
     }
 
-    pub fn load_or_create(dir: &std::path::Path) -> anyhow::Result<Self> {
+    /// Load the config. With `read_only`, it must already exist and is never
+    /// written back.
+    pub fn load_or_create(dir: &std::path::Path, read_only: bool) -> anyhow::Result<Self> {
         let path = dir.join("config.json");
+        anyhow::ensure!(
+            !read_only || path.exists(),
+            "no configuration in {} (start the app normally once first)",
+            dir.display()
+        );
         let mut cfg: Config = if path.exists() {
             let text = std::fs::read_to_string(&path)?;
             serde_json::from_str(&text)?
@@ -116,6 +128,7 @@ impl Config {
             Config::default()
         };
         cfg.dir = dir.to_path_buf();
+        cfg.read_only = read_only;
         let (id, name) = (cfg.node_id, cfg.name.clone());
         cfg.layout.ensure(id, &name);
         cfg.save()?;
@@ -123,6 +136,9 @@ impl Config {
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
         std::fs::create_dir_all(&self.dir)?;
         let tmp = self.dir.join("config.json.tmp");
         std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;

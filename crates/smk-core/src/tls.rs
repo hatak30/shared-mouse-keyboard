@@ -24,11 +24,16 @@ pub struct Identity {
 }
 
 impl Identity {
-    pub fn load_or_create(dir: &std::path::Path) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(dir)?;
+    /// Load the identity, creating it on first use unless `read_only`.
+    pub fn load_or_create(dir: &std::path::Path, read_only: bool) -> anyhow::Result<Self> {
         let cert_path = dir.join("identity.der");
         let key_path = dir.join("identity.key");
-        let (cert, key) = if cert_path.exists() && key_path.exists() {
+        let exists = cert_path.exists() && key_path.exists();
+        anyhow::ensure!(exists || !read_only, "no identity in {}", dir.display());
+        if !exists {
+            std::fs::create_dir_all(dir)?;
+        }
+        let (cert, key) = if exists {
             (std::fs::read(&cert_path)?, std::fs::read(&key_path)?)
         } else {
             let ck = rcgen::generate_simple_self_signed(vec!["shared-mouse-keyboard".to_string()])?;

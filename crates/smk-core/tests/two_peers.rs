@@ -22,6 +22,7 @@ async fn engine(port: u16, screen: Rect) -> (EngineHandle, UnboundedReceiver<Inp
         discovery: false,
         screen: Some(screen),
         inject_sink: Some(tx),
+        read_only: false,
     };
     let h = smk_core::start(opts, Arc::new(|| {})).await.expect("engine starts");
     (h, rx)

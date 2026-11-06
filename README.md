@@ -1,5 +1,9 @@
 # Shared Mouse & Keyboard
 
+[![Latest release](https://img.shields.io/github/v/release/hatak30/shared-mouse-keyboard?label=download&style=for-the-badge)](https://github.com/hatak30/shared-mouse-keyboard/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/hatak30/shared-mouse-keyboard/ci.yml?branch=main&label=build&style=for-the-badge)](https://github.com/hatak30/shared-mouse-keyboard/actions/workflows/ci.yml)
+[![Platforms](https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux-informational?style=for-the-badge)](#download)
+
 Use one mouse and keyboard to control several computers on your local network, and share the clipboard (text, rich text, images and **files**) between them. Works across **macOS, Windows and Linux** in any mix.
 
 - **Seamless cursor movement.** Push the cursor against a screen edge and it continues on the neighbouring machine.
@@ -8,6 +12,22 @@ Use one mouse and keyboard to control several computers on your local network, a
 - **Secure by default.** All traffic is encrypted with TLS. Each machine is paired once with a 6‑digit code.
 - **Automatic discovery.** Machines on the same LAN find each other. You can also add one manually by IP or host name.
 - **Standalone app.** One self-contained app per OS. It keeps running in the system tray when its window is closed.
+
+## Download
+
+### ⬇️ [Get the latest version](https://github.com/hatak30/shared-mouse-keyboard/releases/latest)
+
+On the release page, open **Assets** and pick the file for your system:
+
+| System | File to download | |
+|---|---|---|
+| **macOS** (Apple Silicon and Intel) | `Shared.Mouse.Keyboard_X.Y.Z_universal.dmg` | Open it and drag the app to Applications |
+| **Windows** 10/11 | `Shared.Mouse.Keyboard_X.Y.Z_x64-setup.exe` | Run the installer (the `.msi` works too) |
+| **Linux** Debian/Ubuntu | `Shared.Mouse.Keyboard_X.Y.Z_amd64.deb` | `sudo apt install ./Shared.Mouse.Keyboard_*.deb` |
+| **Linux** Fedora/openSUSE | `Shared.Mouse.Keyboard-X.Y.Z-1.x86_64.rpm` | `sudo dnf install ./Shared.Mouse.Keyboard-*.rpm` |
+| **Linux** any distribution | `Shared.Mouse.Keyboard_X.Y.Z_amd64.AppImage` | `chmod +x` it and run; updates itself |
+
+You only download it once: the app checks GitHub for new versions and offers **Install & restart**. All previous versions are on the [Releases page](https://github.com/hatak30/shared-mouse-keyboard/releases). New to the app? See [Getting started](#getting-started).
 
 ## Screenshots
 
@@ -20,10 +40,6 @@ Use one mouse and keyboard to control several computers on your local network, a
 | ![Machines](docs/screenshots/machines.png) | ![Pairing request](docs/screenshots/pair.png) |
 | **Settings** | **Permissions** |
 | ![Settings](docs/screenshots/settings.png) | ![Permissions](docs/screenshots/permissions.png) |
-
-## Download
-
-Get the installer for your system from the [latest release](https://github.com/hatak30/shared-mouse-keyboard/releases/latest): `.dmg` for macOS (Apple Silicon and Intel), `-setup.exe` or `.msi` for Windows, and `.deb`, `.rpm` or `.AppImage` for Linux. After that the app keeps itself up to date.
 
 ## How it works
 
@@ -50,7 +66,7 @@ Keys are sent in a neutral format (Linux evdev key codes), so a key pressed on o
 
 ## Getting started
 
-1. Install and start the app on every computer. See [Building](#building).
+1. [Download](#download) and start the app on every computer.
 2. Grant the permissions shown on the **Permissions** tab (details below).
 3. Open the **Machines** tab. Your other computers appear within a few seconds. Click **Pair** on one of them.
 4. The other computer shows a 6‑digit code. Type it into the first one. You only need to do this once per pair of machines.

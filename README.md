@@ -73,6 +73,10 @@ Keys are sent in a neutral format (Linux evdev key codes), so a key pressed on o
 3. Open the **Machines** tab. Your other computers appear within a few seconds. Click **Pair** on one of them.
 4. The other computer shows a 6‑digit code. Type it into the first one. You only need to do this once per pair of machines.
 5. Open the **Layout** tab, drag the machines to match your desk, and click **Save layout**. The layout is shared with every paired machine.
+
+**Busy networks.** Every machine on the network that runs the app appears in **Machines**. Use the search box and the *All / Paired / Not paired* filter to find the right one. To stop a machine from bothering you, click **Block** on it, or **Block machine** in its pairing request. Its requests are then declined automatically, and it is hidden from the list (unblock it at the bottom of the tab). You can also turn off **Settings → Pairing → Allow other machines to send pairing requests**. You can still pair by clicking **Pair** on this machine.
+
+Machines only work together once they are paired, so separate groups on the same network (A with B and C, X with Y and Z) stay independent. Don't pair one machine into two groups, or their layouts will overwrite each other.
 6. Move the cursor off the shared edge to switch machines.
 
 ### Hotkeys
@@ -135,7 +139,7 @@ Machines must be able to reach each other on these ports. If broadcast is blocke
 - Each installation generates a private key and a self-signed certificate on first start. They're stored in the config directory, and the key file is readable only by the user.
 - Every connection is TLS 1.2/1.3 with mutual authentication, so both sides prove they hold their private key.
 - Pairing derives a 6‑digit code from **both** certificate fingerprints. The code is shown on one machine and typed into the other. If someone intercepts the connection, the fingerprints differ, the code doesn't match, and pairing fails. After 3 wrong attempts, pairing is cancelled.
-- Unpaired machines can only exchange pairing messages. Input, clipboard and layout updates from them are ignored.
+- Unpaired machines can only exchange pairing messages. Input, clipboard and layout updates from them are ignored. Blocked machines (and every machine, when pairing requests are turned off) get the same "declined" answer, so a blocked machine can't tell it was blocked.
 - Files received through the clipboard are written to a cache directory, and paths that try to escape it are rejected.
 
 ## Configuration

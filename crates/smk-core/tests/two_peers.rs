@@ -263,9 +263,10 @@ fn transfer_on(s: &UiState, incoming: bool) -> Option<smk_core::engine::UiTransf
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn copied_folder_streams_when_cursor_arrives() {
+async fn copied_folder_streams_only_when_pasted() {
     use smk_core::engine::TransferState;
-    let (a, b, _rb) = paired(25831, 25832).await;
+    use smk_core::keymap::ev;
+    let (a, b, mut rb) = paired(25831, 25832).await;
 
     // A folder with a multi-chunk file.
     let src = std::env::temp_dir().join(format!("smk-src-{}", uuid::Uuid::new_v4())).join("Album");
@@ -281,14 +282,63 @@ async fn copied_folder_streams_when_cursor_arrives() {
     })
     .await;
 
-    // Moving the cursor onto B starts the download there.
+    // Moving the cursor onto B doesn't fetch anything…
     a.simulate_input(CapturedEvent::Motion { x: 1279.0, y: 300.0, dx: 5.0, dy: 0.0 });
+    wait_until("controlling B", || a.state().controlling.as_deref() == Some("beta")).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(transfer_on(&b.state(), true).unwrap().state, TransferState::Pending);
+    while rb.try_recv().is_ok() {}
+
+    // …pasting there does, and the paste keystroke itself is held back.
+    let m = if cfg!(target_os = "macos") { ev::LEFTMETA } else { ev::LEFTCTRL };
+    for (code, down) in [(m, true), (ev::V, true), (ev::V, false), (m, false)] {
+        a.simulate_input(CapturedEvent::Key { code, down });
+    }
     wait_until("download finished", || transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Done)).await;
     wait_until("upload shown as done", || transfer_on(&a.state(), false).is_some_and(|t| t.state == TransferState::Done)).await;
+    let mut keys = Vec::new();
+    while let Ok(e) = rb.try_recv() {
+        if let InputEvent::Key { code, down } = e {
+            keys.push((code, down));
+        }
+    }
+    assert_eq!(keys, vec![(m, true), (m, false)], "V must not reach B");
 
     let t = transfer_on(&b.state(), true).unwrap();
     assert_eq!(t.done, t.total);
     assert_eq!(t.total, big.len() as u64 + 2);
+    assert_eq!(t.paths.len(), 1);
+    assert_eq!(std::fs::read(std::path::Path::new(&t.paths[0]).join("raw/photo.bin")).unwrap(), big);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn save_to_folder_keeps_existing_files() {
+    use smk_core::engine::TransferState;
+    let (a, b, _rb) = paired(25861, 25862).await;
+    let root = std::env::temp_dir().join(format!("smk-save-{}", uuid::Uuid::new_v4()));
+    let src = root.join("src");
+    let dst = root.join("external disk");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(src.join("movie.mov"), b"new movie").unwrap();
+    std::fs::write(dst.join("movie.mov"), b"old movie").unwrap();
+
+    a.send(Command::OfferFiles(vec![src.join("movie.mov")]));
+    let mut id = None;
+    wait_until("offer", || {
+        id = transfer_on(&b.state(), true).map(|t| t.id);
+        id.is_some()
+    })
+    .await;
+    b.send(Command::SaveTransferTo(id.unwrap(), dst.clone()));
+    wait_until("saved", || transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Done)).await;
+    let t = transfer_on(&b.state(), true).unwrap();
+    assert_eq!(t.paths, vec![dst.join("movie 2.mov").display().to_string()]);
+    assert_eq!(std::fs::read(dst.join("movie.mov")).unwrap(), b"old movie");
+    assert_eq!(std::fs::read(dst.join("movie 2.mov")).unwrap(), b"new movie");
+    // Nothing left behind but the two movies.
+    assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 2);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

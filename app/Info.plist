@@ -4,6 +4,8 @@
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Shared Mouse Keyboard finds and connects to your other computers on the local network.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>When you paste files copied on another computer into a Finder window, Shared Mouse Keyboard asks Finder which folder you are pasting into and saves the files there.</string>
   <key>NSBonjourServices</key>
   <array/>
 </dict>

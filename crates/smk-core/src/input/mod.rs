@@ -44,6 +44,9 @@ pub enum CapturedEvent {
     Key { code: u16, down: bool },
     /// The capture backend stopped (e.g. permission revoked).
     Stopped(String),
+    /// The paste shortcut was pressed locally while files copied on another
+    /// machine are waiting; the keystroke itself was swallowed.
+    Paste,
 }
 
 pub type CaptureSender = UnboundedSender<CapturedEvent>;
@@ -57,6 +60,11 @@ pub struct CaptureShared {
     /// otherwise the local machine would see a stuck key.
     local_pressed: Mutex<HashSet<u16>>,
     local_buttons: Mutex<HashSet<MouseButton>>,
+    /// Set by the engine while remote files wait for a paste.
+    paste_armed: AtomicBool,
+    /// The V of an intercepted paste is held down (swallow its repeats/release).
+    paste_swallowing: AtomicBool,
+    paste_tx: Mutex<Option<UnboundedSender<CapturedEvent>>>,
 }
 
 impl CaptureShared {
@@ -68,8 +76,31 @@ impl CaptureShared {
         self.grabbing.store(v, Ordering::SeqCst);
     }
 
+    /// Intercept the local paste shortcut while `armed` (see [`CapturedEvent::Paste`]).
+    pub(crate) fn arm_paste(&self, armed: bool, tx: &UnboundedSender<CapturedEvent>) {
+        if armed {
+            self.paste_tx.lock().get_or_insert_with(|| tx.clone());
+        }
+        self.paste_armed.store(armed, Ordering::SeqCst);
+    }
+
     /// Returns true if the key event must be swallowed (not delivered locally).
     pub fn filter_key(&self, code: u16, down: bool) -> bool {
+        if code == crate::keymap::ev::V && !self.grabbing() {
+            if self.paste_swallowing.load(Ordering::SeqCst) {
+                if !down {
+                    self.paste_swallowing.store(false, Ordering::SeqCst);
+                }
+                return true;
+            }
+            if down && self.paste_armed.load(Ordering::SeqCst) && crate::keymap::is_paste_chord(&self.local_pressed.lock()) {
+                self.paste_swallowing.store(true, Ordering::SeqCst);
+                if let Some(tx) = self.paste_tx.lock().as_ref() {
+                    let _ = tx.send(CapturedEvent::Paste);
+                }
+                return true;
+            }
+        }
         let mut pressed = self.local_pressed.lock();
         if !self.grabbing() {
             if down {
@@ -121,5 +152,41 @@ impl ScrollAccumulator {
         self.rem_x -= tx * unit;
         self.rem_y -= ty * unit;
         (tx, ty)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap::ev;
+
+    #[test]
+    fn paste_chord_is_swallowed_only_while_armed() {
+        let shared = CaptureShared::default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let m = if cfg!(target_os = "macos") { ev::LEFTMETA } else { ev::LEFTCTRL };
+
+        // Not armed: a normal paste goes through.
+        assert!(!shared.filter_key(m, true));
+        assert!(!shared.filter_key(ev::V, true));
+        assert!(!shared.filter_key(ev::V, false));
+        assert!(rx.try_recv().is_err());
+
+        // Armed: V (and its repeat and release) is swallowed, reported once.
+        shared.arm_paste(true, &tx);
+        assert!(shared.filter_key(ev::V, true));
+        assert!(shared.filter_key(ev::V, true));
+        assert!(shared.filter_key(ev::V, false));
+        assert!(!shared.filter_key(m, false));
+        assert_eq!(rx.try_recv().ok(), Some(CapturedEvent::Paste));
+        assert!(rx.try_recv().is_err());
+
+        // V alone, or with Shift as well, is left alone.
+        assert!(!shared.filter_key(ev::V, true));
+        assert!(!shared.filter_key(ev::V, false));
+        assert!(!shared.filter_key(m, true));
+        assert!(!shared.filter_key(ev::LEFTSHIFT, true));
+        assert!(!shared.filter_key(ev::V, true));
+        assert!(rx.try_recv().is_err());
     }
 }

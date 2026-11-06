@@ -1,6 +1,7 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod login_screen;
 
 use std::sync::Arc;
@@ -11,7 +12,6 @@ use serde::Serialize;
 use smk_core::config::Settings;
 use smk_core::engine::{Command, EngineHandle, UiState};
 use smk_core::layout::Layout;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -89,6 +89,17 @@ fn set_name(app: State<App>, name: String) {
 #[tauri::command]
 fn start_transfer(app: State<App>, id: Uuid) {
     app.engine.send(Command::StartTransfer(id));
+}
+
+/// Ask for a folder and download a pending copy straight into it.
+#[tauri::command]
+fn save_transfer_to(handle: AppHandle, app: State<App>, id: Uuid) {
+    activity::save_to(&handle, app.engine.clone(), id);
+}
+
+#[tauri::command]
+fn reveal_path(path: String) {
+    activity::reveal(std::path::Path::new(&path));
 }
 
 #[tauri::command]
@@ -283,10 +294,35 @@ fn spawn_update_checker(app: AppHandle) {
 
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        if !w.is_visible().unwrap_or(false) {
+            move_to_pointer_screen(app, &w);
+        }
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// Center the window on the display the mouse pointer is on, so it doesn't
+/// open on a screen you aren't looking at.
+fn move_to_pointer_screen(app: &AppHandle, w: &tauri::WebviewWindow) {
+    let Ok(p) = app.cursor_position() else { return };
+    let Ok(monitors) = w.available_monitors() else { return };
+    let Some(m) = monitors.iter().find(|m| {
+        let (pos, size) = (m.position(), m.size());
+        p.x >= pos.x as f64 && p.y >= pos.y as f64 && p.x < (pos.x + size.width as i32) as f64 && p.y < (pos.y + size.height as i32) as f64
+    }) else {
+        return;
+    };
+    let Ok(cur) = w.current_monitor() else { return };
+    if cur.as_ref().is_some_and(|c| c.position() == m.position()) {
+        return;
+    }
+    let Ok(size) = w.outer_size() else { return };
+    let (pos, ms) = (m.position(), m.size());
+    let x = pos.x + (ms.width as i32 - size.width as i32).max(0) / 2;
+    let y = pos.y + (ms.height as i32 - size.height as i32).max(0) / 2;
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 fn main() {
@@ -312,6 +348,8 @@ fn main() {
         // Started at login with --hidden: run quietly in the tray.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(UpdateState::default())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .setup(move |app| {
@@ -326,14 +364,11 @@ fn main() {
                 .map_err(|e| format!("failed to start engine: {e:#}"))?;
             app.manage(App { engine: engine.clone() });
 
-            // Tray icon: the app keeps running when the window is closed.
-            let open = MenuItem::with_id(app, "open", "Open control panel", true, None::<&str>)?;
-            let home = MenuItem::with_id(app, "home", "Return cursor to this machine", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &home, &sep, &quit])?;
+            // Tray icon: the app keeps running when the window is closed. Its
+            // menu also shows file copies (see `activity`).
+            let (menu, _) = activity::menu(app.handle(), &[])?;
             let tray_engine = engine.clone();
-            let mut tray = TrayIconBuilder::with_id("main")
+            let mut tray = TrayIconBuilder::with_id(activity::TRAY_ID)
                 .tooltip("Shared Mouse & Keyboard")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -344,7 +379,9 @@ fn main() {
                         tray_engine.send(Command::ReturnHome);
                         app.exit(0);
                     }
-                    _ => {}
+                    id => {
+                        activity::on_menu(app, &tray_engine, id, &tray_engine.state().transfers);
+                    }
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -360,6 +397,7 @@ fn main() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            activity::spawn(handle.clone(), engine.clone());
 
             if start_hidden {
                 if let Some(w) = app.get_webview_window("main") {
@@ -390,6 +428,8 @@ fn main() {
             set_name,
             return_home,
             start_transfer,
+            save_transfer_to,
+            reveal_path,
             cancel_transfer,
             dismiss_transfer,
             request_permission,

@@ -90,14 +90,20 @@ The tray menu also has **Return cursor to this machine**.
 
 ## Copying files and folders
 
-1. Copy files or folders as usual (⌘C / Ctrl+C in Finder, Explorer or your file manager). Only the **list** of items (names and sizes) is sent to your other machines, which is instant.
-2. Move the cursor to another machine. That machine downloads the files from the one you copied on over a **separate** encrypted connection, so the mouse and keyboard stay responsive. Progress (percentage, speed, time left) and a **Cancel** button appear at the top of the control panel on both machines. **Download now** starts it without moving the cursor.
-3. When it finishes, the files are on the clipboard. Paste (⌘V / Ctrl+V) as usual.
+1. Copy files or folders as usual (⌘C / Ctrl+C in Finder, Explorer or your file manager). Only the **list** of items (names and sizes) is sent to your other machines. **Nothing is transferred yet**, even when you move the cursor over.
+2. Paste on the machine where you want them (⌘V on a Mac, Ctrl+V on Windows/Linux). The app holds that keystroke back and fetches the files over a **separate** encrypted connection, so the mouse and keyboard stay responsive:
+   - **In a Finder window (macOS):** the files are saved straight into that folder, including on an external disk. The first time, macOS asks to let the app control Finder; this is how it learns which folder you're pasting into.
+   - **Anywhere else:** the files are fetched to a temporary folder, put on the clipboard, and pasted automatically when the download finishes, if the same app is still in front.
+3. To choose a folder instead, use **Save to…** in the control panel or **Save copied files to…** in the menu bar / tray menu.
 
-- **No size limit.** Files are streamed straight to disk in chunks, so memory use stays flat. The only check is free disk space on the receiving machine.
+While a copy runs, its percentage is shown next to the menu bar icon (macOS/Linux) and in the tray tooltip (Windows). The tray menu has **Cancel copy**, and notifications tell you when a large copy starts, finishes or fails. The control panel shows speed and time left, and **Show in Finder** when done.
+
+- **No size limit.** Files are streamed straight to disk in chunks, so memory use stays flat. The only check is free space on the disk they're saved to.
+- Existing files are never overwritten: a clash becomes `name 2.ext`.
 - Folder structure, empty folders and modification times are kept. Symbolic links are skipped.
-- Copying something new cancels a transfer that is still running, and partial files are removed.
-- Received files live in the app's cache folder (`~/Library/Caches/shared-mouse-keyboard/clipboard` on macOS). The last few transfers are kept, and older ones are deleted automatically. Pasting copies them to where you paste.
+- Copying something new drops files that haven't been pasted yet. A copy that's already running keeps going. Cancelling removes partial files.
+- Only the ⌘V / Ctrl+V keys are caught, not **Edit → Paste** from a menu or right-click. Use **Save to…** or **Fetch to clipboard** for those cases. On Linux, only a paste coming from another machine's keyboard is caught; on that machine's own keyboard, use the menu.
+- Files fetched to the clipboard live in the app's cache folder (`~/Library/Caches/shared-mouse-keyboard/clipboard` on macOS). The last few are kept, and older ones are deleted automatically.
 
 ## Permissions
 

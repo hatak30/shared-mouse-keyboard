@@ -243,6 +243,33 @@ pub async fn receive<R: AsyncRead + Unpin>(
         .collect())
 }
 
+/// Move received top-level items into `folder`, renaming on clashes
+/// ("name 2.ext") so nothing existing is overwritten. Returns the new paths.
+pub fn move_into(items: &[PathBuf], folder: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(name) = item.file_name() else { continue };
+        let dest = unique_path(folder, Path::new(name));
+        std::fs::rename(item, &dest)?;
+        out.push(dest);
+    }
+    Ok(out)
+}
+
+/// `folder/name`, or `folder/name 2.ext`, `name 3.ext`… if taken.
+pub fn unique_path(folder: &Path, name: &Path) -> PathBuf {
+    let first = folder.join(name);
+    if std::fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    let stem = name.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = name.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..)
+        .map(|n| folder.join(format!("{stem} {n}{ext}")))
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .expect("some free name")
+}
+
 /// Default root for received files.
 pub fn default_download_root() -> PathBuf {
     dirs::cache_dir()
@@ -269,6 +296,21 @@ pub fn new_transfer_dir(root: &Path, keep: usize) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn move_into_never_overwrites() {
+        let root = std::env::temp_dir().join(format!("smk-move-{}", Uuid::new_v4()));
+        let (src, dst) = (root.join("src"), root.join("dst"));
+        std::fs::create_dir_all(src.join("Album")).unwrap();
+        std::fs::create_dir_all(dst.join("Album")).unwrap();
+        std::fs::write(src.join("a.txt"), "new").unwrap();
+        std::fs::write(dst.join("a.txt"), "old").unwrap();
+        let moved = move_into(&[src.join("a.txt"), src.join("Album")], &dst).unwrap();
+        assert_eq!(moved, vec![dst.join("a 2.txt"), dst.join("Album 2")]);
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(dst.join("a 2.txt")).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn safe_join_rejects_escapes() {

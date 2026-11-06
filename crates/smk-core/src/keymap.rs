@@ -29,6 +29,23 @@ pub mod ev {
     pub const LEFTMETA: u16 = 125;
     pub const RIGHTMETA: u16 = 126;
     pub const FN: u16 = 0x1d0;
+    pub const V: u16 = 47;
+}
+
+/// The modifier that pastes on this OS: Command on macOS, Ctrl elsewhere.
+pub fn is_paste_modifier(code: u16) -> bool {
+    if cfg!(target_os = "macos") {
+        is_meta(code)
+    } else {
+        is_ctrl(code)
+    }
+}
+
+/// True if exactly the paste modifier is held (so `V` would paste, not e.g.
+/// "paste and match style" or some other shortcut).
+pub fn is_paste_chord(held: &std::collections::HashSet<u16>) -> bool {
+    held.iter().any(|&c| is_paste_modifier(c))
+        && held.iter().all(|&c| is_paste_modifier(c) || !(is_ctrl(c) || is_alt(c) || is_shift(c) || is_meta(c)))
 }
 
 pub fn is_ctrl(code: u16) -> bool {

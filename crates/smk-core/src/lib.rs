@@ -11,6 +11,7 @@ pub mod input;
 pub mod keymap;
 pub mod layout;
 pub mod net;
+pub mod paste;
 pub mod permissions;
 pub mod protocol;
 pub mod tls;

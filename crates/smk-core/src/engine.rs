@@ -22,6 +22,7 @@ use crate::input::{self, CaptureShared, CapturedEvent, Injector};
 use crate::keymap::{self, ev};
 use crate::layout::{Direction, Layout};
 use crate::net::{self, ConnId, NetEvent};
+use crate::paste::{self, PasteTarget};
 use crate::permissions::{self, Permission};
 use crate::protocol::{ClipboardData, Hello, InputEvent, Message, MouseButton, Os, Rect, PROTOCOL_VERSION};
 use crate::tls::{pairing_code, Identity};
@@ -98,7 +99,7 @@ pub struct UiState {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferState {
-    /// Offered by another machine; downloads when the cursor comes here.
+    /// Offered by another machine; downloads when the user pastes.
     Pending,
     Running,
     Done,
@@ -120,6 +121,10 @@ pub struct UiTransfer {
     pub error: Option<String>,
     pub started_ms: Option<u64>,
     pub finished_ms: Option<u64>,
+    /// Receiving straight into this folder (paste in Finder / "Save to…").
+    pub saved_to: Option<String>,
+    /// Received files and folders, once done.
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,8 +152,16 @@ pub enum Command {
     SetName(String),
     ReturnHome,
     RefreshPermissions,
-    /// Start downloading a pending incoming transfer now.
+    /// Download a pending incoming transfer now and put it on the clipboard.
     StartTransfer(Uuid),
+    /// Download a pending incoming transfer straight into this folder.
+    SaveTransferTo(Uuid, std::path::PathBuf),
+    /// Internal: where an intercepted paste is going.
+    #[doc(hidden)]
+    PasteResolved(Uuid, PasteTarget),
+    /// Internal: paste again into this app (files are on the clipboard now).
+    #[doc(hidden)]
+    Repaste(i64),
     /// Offer these files to paired machines as if they had been copied.
     OfferFiles(Vec<std::path::PathBuf>),
     CancelTransfer(Uuid),
@@ -268,6 +281,8 @@ struct Xfer {
     dir: Option<std::path::PathBuf>,
     /// Receiving side: the offering machine and its offer.
     from: Option<(Uuid, FileOffer)>,
+    /// Paste again into this app once the files are on the clipboard.
+    repaste: Option<i64>,
 }
 
 enum XferEvent {
@@ -309,6 +324,11 @@ struct Engine {
     xfer_tx: UnboundedSender<XferEvent>,
     /// Files copied on this machine that peers may fetch.
     local_offer: Option<Arc<LocalOffer>>,
+    cmd_tx: UnboundedSender<Command>,
+    /// Waiting to learn where an intercepted paste goes (this transfer).
+    paste_resolving: Option<Uuid>,
+    /// The V of a paste chord from the controlling machine was swallowed.
+    remote_paste_v: bool,
     transfers: Vec<Xfer>,
     clip_ignore_until: Instant,
     clip_last_hash: Option<[u8; 32]>,
@@ -420,6 +440,9 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         offer_tx,
         xfer_tx,
         local_offer: None,
+        cmd_tx: cmd_tx.clone(),
+        paste_resolving: None,
+        remote_paste_v: false,
         transfers: Vec::new(),
         clip_ignore_until: Instant::now(),
         clip_last_hash: None,
@@ -706,8 +729,6 @@ impl Engine {
                     tracing::debug!("{n} took control");
                 }
                 self.inject(InputEvent::MouseMove { x, y });
-                // The cursor is here now: fetch files copied elsewhere.
-                self.start_pending_incoming();
                 self.dirty = true;
             }
             Message::Leave => {
@@ -1124,7 +1145,23 @@ impl Engine {
                 let c = self.screen.center();
                 self.return_local(c);
             }
-            Command::StartTransfer(id) => self.start_incoming(id),
+            Command::StartTransfer(id) => self.start_incoming(id, None, None),
+            Command::SaveTransferTo(id, folder) => self.start_incoming(id, Some(folder), None),
+            Command::PasteResolved(id, target) => {
+                self.paste_resolving = None;
+                match target {
+                    PasteTarget::Folder(f) => self.start_incoming(id, Some(f), None),
+                    PasteTarget::App(app) => self.start_incoming(id, None, app),
+                }
+            }
+            Command::Repaste(app) => {
+                if self.opts.os_input && paste::front_app() == Some(app) {
+                    let m = if cfg!(target_os = "macos") { ev::LEFTMETA } else { ev::LEFTCTRL };
+                    for (code, down) in [(m, true), (ev::V, true), (ev::V, false), (m, false)] {
+                        self.inject(InputEvent::Key { code, down });
+                    }
+                }
+            }
             Command::OfferFiles(paths) => {
                 let tx = self.offer_tx.clone();
                 tokio::task::spawn_blocking(move || {
@@ -1155,6 +1192,7 @@ impl Engine {
                 self.return_local(c);
             }
             CapturedEvent::Key { code, down } => self.on_key(code, down),
+            CapturedEvent::Paste => self.on_paste(),
             CapturedEvent::Button { button, down } => {
                 if let Control::Remote { conn, .. } = self.control {
                     if down {
@@ -1352,7 +1390,6 @@ impl Engine {
             self.set_grab(false);
             let (x, y) = self.screen.clamp(at.0, at.1);
             self.warp(x, y);
-            self.start_pending_incoming();
             self.dirty = true;
         }
     }
@@ -1361,6 +1398,15 @@ impl Engine {
 
     fn inject_remote(&mut self, ev: InputEvent) {
         match ev {
+            InputEvent::Key { code: ev::V, down } if self.remote_paste_v || (down && self.paste_armed() && keymap::is_paste_chord(&self.injected_keys)) => {
+                // Paste with files from another machine waiting: fetch them
+                // first instead of pasting the old clipboard.
+                if down && !self.remote_paste_v {
+                    self.on_paste();
+                }
+                self.remote_paste_v = down;
+                return;
+            }
             InputEvent::Key { code, down } => {
                 if down {
                     self.injected_keys.insert(code);
@@ -1467,26 +1513,20 @@ impl Engine {
 
     /// A new local copy (or a remote one) makes our previous file offer stale:
     /// stop serving it and abort uploads in progress.
+    /// A new copy makes our previous file offer stale: machines that haven't
+    /// pasted it yet can no longer fetch it. Downloads already started (the
+    /// user pasted) keep going.
     fn supersede_local_offer(&mut self) {
-        if self.local_offer.take().is_some() {
-            let ids: Vec<Uuid> = self
-                .transfers
-                .iter()
-                .filter(|t| !t.ui.incoming && t.ui.state == TransferState::Running)
-                .map(|t| t.ui.id)
-                .collect();
-            for id in ids {
-                self.cancel_transfer(id, "replaced by a newer copy");
-            }
-        }
+        self.local_offer = None;
     }
 
-    /// Cancel the pending or running download, if any.
+    /// Drop files copied elsewhere that haven't been pasted yet. Downloads
+    /// already started (the user pasted) keep going.
     fn cancel_incoming(&mut self, why: &str) {
         let ids: Vec<Uuid> = self
             .transfers
             .iter()
-            .filter(|t| t.ui.incoming && matches!(t.ui.state, TransferState::Pending | TransferState::Running))
+            .filter(|t| t.ui.incoming && t.ui.state == TransferState::Pending)
             .map(|t| t.ui.id)
             .collect();
         for id in ids {
@@ -1557,27 +1597,36 @@ impl Engine {
                 error: None,
                 started_ms: None,
                 finished_ms: None,
+            saved_to: None,
+            paths: Vec::new(),
             },
             abort: None,
             dir: None,
             from: Some((h.node_id, offer)),
+            repaste: None,
         });
-        // Already being used from another machine: fetch right away.
-        if self.controlled_by.is_some() {
-            self.start_pending_incoming();
-        }
+        let (label, total) = (self.transfers[0].ui.label.clone(), self.transfers[0].ui.total);
+        self.log(format!("{} copied {label} ({}) — paste here to fetch it", h.name, human_bytes(total)));
     }
 
-    fn start_pending_incoming(&mut self) {
-        let pending: Vec<Uuid> = self
-            .transfers
-            .iter()
-            .filter(|t| t.ui.incoming && t.ui.state == TransferState::Pending)
-            .map(|t| t.ui.id)
-            .collect();
-        for id in pending {
-            self.start_incoming(id);
+    /// The paste shortcut was pressed (locally or from the controlling
+    /// machine) while copied files wait: find out where it goes, then fetch.
+    fn on_paste(&mut self) {
+        let Some(id) = self.transfers.iter().find(|t| t.ui.incoming && t.ui.state == TransferState::Pending).map(|t| t.ui.id) else {
+            return;
+        };
+        if self.paste_resolving.is_some() {
+            return;
         }
+        self.paste_resolving = Some(id);
+        if !self.opts.os_input {
+            self.on_command(Command::PasteResolved(id, PasteTarget::App(None)));
+            return;
+        }
+        let tx = self.cmd_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(Command::PasteResolved(id, paste::target()));
+        });
     }
 
     fn fail_transfer(&mut self, id: Uuid, err: String) {
@@ -1592,7 +1641,15 @@ impl Engine {
         self.log(format!("File transfer failed: {err}"));
     }
 
-    fn start_incoming(&mut self, id: Uuid) {
+    /// Files from another machine wait for a paste (intercept Cmd/Ctrl+V).
+    fn paste_armed(&self) -> bool {
+        self.transfers.iter().any(|t| t.ui.incoming && t.ui.state == TransferState::Pending)
+    }
+
+    /// Fetch a pending transfer. `folder`: save straight there (otherwise to
+    /// the clipboard cache and onto the clipboard). `repaste`: app to paste
+    /// into again once the files are on the clipboard.
+    fn start_incoming(&mut self, id: Uuid, folder: Option<std::path::PathBuf>, repaste: Option<i64>) {
         let Some((node, offer)) = self
             .xfer(id)
             .filter(|t| t.ui.incoming && t.ui.state == TransferState::Pending)
@@ -1608,8 +1665,19 @@ impl Engine {
         let addr = SocketAddr::new(peer.addr.ip(), port);
         let fingerprint = peer.fingerprint.clone();
 
-        let root = self.opts.download_root.clone().unwrap_or_else(transfer::default_download_root);
-        let dir = match transfer::new_transfer_dir(&root, 4) {
+        let dir = match &folder {
+            // Staged next to the destination (same disk, so moving it into
+            // place at the end is instant), hidden until complete.
+            Some(f) => {
+                let d = f.join(format!(".smk-incoming-{}", id.simple()));
+                std::fs::create_dir_all(&d).map(|_| d)
+            }
+            None => {
+                let root = self.opts.download_root.clone().unwrap_or_else(transfer::default_download_root);
+                transfer::new_transfer_dir(&root, 4)
+            }
+        };
+        let dir = match dir {
             Ok(d) => d,
             Err(e) => {
                 self.fail_transfer(id, format!("cannot create download folder: {e}"));
@@ -1632,27 +1700,40 @@ impl Engine {
         let connector = self.connector.clone();
         let tx = self.xfer_tx.clone();
         let task_dir = dir.clone();
+        let task_folder = folder.clone();
         let task = tokio::spawn(async move {
             let result = async {
                 let mut stream = net::dial_transfer(addr, connector, &fingerprint, id).await?;
                 let mut last = Instant::now();
                 let ptx = tx.clone();
-                transfer::receive(&mut stream, &offer, &task_dir, move |done| {
+                let paths = transfer::receive(&mut stream, &offer, &task_dir, move |done| {
                     if last.elapsed() >= Duration::from_millis(150) {
                         last = Instant::now();
                         let _ = ptx.send(XferEvent::Progress { id, done });
                     }
                 })
-                .await
+                .await?;
+                match task_folder {
+                    Some(f) => Ok(tokio::task::spawn_blocking(move || {
+                        let moved = transfer::move_into(&paths, &f);
+                        let _ = std::fs::remove_dir_all(&task_dir);
+                        moved
+                    })
+                    .await??),
+                    None => Ok(paths),
+                }
             }
             .await;
+            let result: anyhow::Result<Vec<std::path::PathBuf>> = result;
             let _ = tx.send(XferEvent::Finished { id, result: result.map(Some).map_err(|e| format!("{e:#}")) });
         });
         if let Some(t) = self.xfer(id) {
             t.ui.state = TransferState::Running;
             t.ui.started_ms = Some(now_ms());
+            t.ui.saved_to = folder.map(|f| f.display().to_string());
             t.abort = Some(task.abort_handle());
             t.dir = Some(dir);
+            t.repaste = repaste;
         }
         self.dirty = true;
     }
@@ -1703,8 +1784,10 @@ impl Engine {
             error: None,
             started_ms: Some(now_ms()),
             finished_ms: None,
+            saved_to: None,
+            paths: Vec::new(),
         };
-        self.push_transfer(Xfer { ui, abort: Some(task.abort_handle()), dir: None, from: None });
+        self.push_transfer(Xfer { ui, abort: Some(task.abort_handle()), dir: None, from: None, repaste: None });
     }
 
     fn on_xfer(&mut self, ev: XferEvent) {
@@ -1729,13 +1812,27 @@ impl Engine {
                         t.ui.done = t.ui.total;
                         t.ui.finished_ms = Some(now_ms());
                         let (label, peer, incoming) = (t.ui.label.clone(), t.ui.peer.clone(), t.ui.incoming);
-                        if let (Some(paths), Some(cb)) = (paths, self.clipboard.clone()) {
+                        let (saved_to, repaste) = (t.ui.saved_to.clone(), t.repaste);
+                        if let Some(p) = &paths {
+                            t.ui.paths = p.iter().map(|p| p.display().to_string()).collect();
+                        }
+                        // The download folder is kept until the next copy.
+                        if saved_to.is_some() {
+                            t.dir = None;
+                        }
+                        if let (Some(folder), Some(_)) = (&saved_to, &paths) {
+                            self.log(format!("Saved {label} from {peer} to {folder}"));
+                        } else if let (Some(paths), Some(cb)) = (paths, self.clipboard.clone()) {
                             self.clip_ignore_until = Instant::now() + Duration::from_millis(1500);
                             self.clip_pending = None;
-                            tokio::task::spawn_blocking(move || {
-                                if let Err(e) = cb.write_files(paths) {
-                                    tracing::warn!("putting files on the clipboard failed: {e}");
+                            let cmd_tx = self.cmd_tx.clone();
+                            tokio::task::spawn_blocking(move || match cb.write_files(paths) {
+                                Ok(()) => {
+                                    if let Some(app) = repaste {
+                                        let _ = cmd_tx.send(Command::Repaste(app));
+                                    }
                                 }
+                                Err(e) => tracing::warn!("putting files on the clipboard failed: {e}"),
                             });
                             self.log(format!("Received {label} from {peer} — ready to paste"));
                         } else if !incoming {
@@ -1760,6 +1857,11 @@ impl Engine {
 
     fn publish(&mut self) {
         self.dirty = false;
+        // Local Cmd/Ctrl+V can only be held back where the hook may swallow
+        // keys without grabbing the keyboard (macOS, Windows).
+        if self.opts.os_input && cfg!(any(target_os = "macos", target_os = "windows")) {
+            self.shared.arm_paste(self.paste_armed(), &self.capture_tx);
+        }
         let mut peers: Vec<UiPeer> = Vec::new();
         for p in self.peers.values() {
             let Some(h) = &p.hello else { continue };

@@ -610,7 +610,7 @@ function speedOf(t) {
 }
 
 // Finished entries fade out on their own after a while.
-const XFER_HIDE_AFTER = { done: 20000, cancelled: 15000 };
+const XFER_HIDE_AFTER = { done: 60000, cancelled: 15000 };
 function renderTransfers() {
   const box = $("#transfers");
   const now = Date.now();
@@ -627,16 +627,23 @@ function renderTransfers() {
     const dismiss = btn("Dismiss", "", () => call("dismiss_transfer", { id: t.id }));
     let icon = t.incoming ? "📥" : "📤", title, sub, buttons = [], bar = null, cls = "xfer";
     switch (t.state) {
-      case "pending":
+      case "pending": {
+        const mac = state.me.os === "MacOs";
         title = `${what} copied on ${t.peer}`;
-        sub = "Will download when you move the cursor to this machine.";
-        buttons = [btn("Download now", "primary", () => call("start_transfer", { id: t.id })), dismiss];
+        sub = `Nothing is copied until you paste. Press ${mac ? "⌘V" : "Ctrl+V"} where you want it${mac ? " — in a Finder window it is saved straight into that folder" : ""}, or choose a folder.`;
+        buttons = [
+          btn("Save to…", "primary", () => call("save_transfer_to", { id: t.id })),
+          el("button", { class: "btn small", title: "Download now and put it on the clipboard, e.g. to paste from a menu", onclick: () => call("start_transfer", { id: t.id }) }, "Fetch to clipboard"),
+          dismiss,
+        ];
         break;
+      }
       case "running": {
         const bps = speedOf(t);
         const left = bps > 0 ? (t.total - t.done) / bps : NaN;
         title = t.incoming ? `Receiving ${what} from ${t.peer}` : `Sending ${what} to ${t.peer}`;
-        sub = [`${Math.floor(pct)}%`, `${fmtBytes(t.done)} of ${fmtBytes(t.total)}`, bps > 0 ? `${fmtBytes(bps)}/s` : "", left ? `${fmtDuration(left)} left` : ""]
+        sub = [`${Math.floor(pct)}%`, `${fmtBytes(t.done)} of ${fmtBytes(t.total)}`, bps > 0 ? `${fmtBytes(bps)}/s` : "", left ? `${fmtDuration(left)} left` : "",
+          t.saved_to ? `into ${t.saved_to}` : ""]
           .filter(Boolean).join(" · ");
         bar = el("div", { class: "bar" }, el("div", { style: `width:${pct}%` }));
         buttons = [cancel];
@@ -646,8 +653,10 @@ function renderTransfers() {
         icon = "✅";
         cls += " done";
         title = t.incoming ? `${t.label} received from ${t.peer}` : `${t.label} sent to ${t.peer}`;
-        sub = t.incoming ? "Ready to paste." : `${fmtBytes(t.total)} transferred.`;
-        buttons = [dismiss];
+        sub = !t.incoming ? `${fmtBytes(t.total)} transferred.` : t.saved_to ? `Saved to ${t.saved_to}.` : "On the clipboard — paste it anywhere.";
+        buttons = t.incoming && t.paths.length
+          ? [btn(state.me.os === "MacOs" ? "Show in Finder" : state.me.os === "Windows" ? "Show in Explorer" : "Show folder", "", () => call("reveal_path", { path: t.paths[0] })), dismiss]
+          : [dismiss];
         break;
       case "cancelled":
         icon = "⏹";

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shared Mouse &amp; Keyboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="logo.png" alt="" class="logo" />
+      <div>
+        <div class="title">Shared Mouse &amp; Keyboard</div>
+        <div class="subtitle">This machine: <button id="me-name" class="linklike" title="Rename this machine"></button>
+          <span id="me-meta" class="muted"></span></div>
+      </div>
+    </div>
+    <div id="status" class="status"></div>
+  </header>
+
+  <div id="alerts"></div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="layout" role="tab">Layout</button>
+    <button class="tab" data-tab="machines" role="tab">Machines <span id="pending-badge" class="badge hidden"></span></button>
+    <button class="tab" data-tab="permissions" role="tab">Permissions <span id="perm-badge" class="badge warn hidden">!</span></button>
+    <button class="tab" data-tab="settings" role="tab">Settings</button>
+    <button class="tab" data-tab="activity" role="tab">Activity</button>
+  </nav>
+
+  <main>
+    <!-- Layout -->
+    <section id="tab-layout" class="panel active">
+      <div class="panel-head">
+        <div>
+          <h2>Screen layout</h2>
+          <p class="muted">Drag machines so they match where the screens physically stand. The cursor moves to a
+            neighbouring machine when it reaches the shared edge. Machines that only touch at a corner are not connected.</p>
+        </div>
+        <div class="actions">
+          <span id="layout-dirty" class="dirty hidden">Unsaved changes</span>
+          <button id="layout-reset" class="btn" disabled>Revert</button>
+          <button id="layout-save" class="btn primary" disabled>Save layout</button>
+        </div>
+      </div>
+      <div id="grid-wrap" class="grid-wrap">
+        <div id="grid" class="grid"></div>
+      </div>
+      <div class="unplaced">
+        <h3>Not placed <span class="muted">— paired machines that are not in the layout. Drag them onto the grid, or drag a machine here to remove it.</span></h3>
+        <div id="unplaced" class="unplaced-list"></div>
+      </div>
+      <p class="hint muted">Hotkeys: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>←↑→↓</kbd> jumps to the neighbouring machine,
+        <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> brings the cursor back to this machine.</p>
+    </section>
+
+    <!-- Machines -->
+    <section id="tab-machines" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Machines</h2>
+          <p class="muted">Computers running Shared Mouse &amp; Keyboard on your network appear here automatically.
+            Pair a machine once to let it share input and clipboard with this one.</p>
+        </div>
+      </div>
+      <div id="machines" class="cards"></div>
+      <div class="card add">
+        <h3>Add by address</h3>
+        <p class="muted">If a machine does not show up (for example on networks that block broadcast), enter its IP address or host name.</p>
+        <form id="add-form" class="row">
+          <input id="add-addr" type="text" placeholder="192.168.1.20 or hostname[:port]" autocomplete="off" spellcheck="false" />
+          <button class="btn primary" type="submit">Connect</button>
+        </form>
+        <div id="manual-list" class="chips"></div>
+      </div>
+    </section>
+
+    <!-- Permissions -->
+    <section id="tab-permissions" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Permissions</h2>
+          <p class="muted">The operating system must allow this app to read and simulate mouse and keyboard input, and to talk on the local network.</p>
+        </div>
+        <div class="actions"><button id="perm-refresh" class="btn">Re-check</button></div>
+      </div>
+      <div id="permissions" class="cards"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="panel">
+      <div class="panel-head"><div><h2>Settings</h2></div></div>
+      <form id="settings" class="settings">
+        <fieldset>
+          <legend>Clipboard</legend>
+          <label class="check"><input type="checkbox" name="clipboard_enabled" /> Share clipboard (text, rich text, images)</label>
+          <label class="check"><input type="checkbox" name="clipboard_files_enabled" /> Share copied files</label>
+          <label class="field">Maximum size of copied files
+            <span class="row"><input type="number" name="clipboard_max_file_mb" min="1" max="2000" step="1" /> MB</span></label>
+        </fieldset>
+        <fieldset>
+          <legend>Keyboard</legend>
+          <label class="check"><input type="checkbox" name="swap_cmd_ctrl" /> Swap ⌘ Command and Ctrl between Mac and Windows/Linux</label>
+          <label class="check"><input type="checkbox" name="hotkeys_enabled" /> Enable switching hotkeys (Ctrl+Alt+Shift+Arrows / Enter)</label>
+        </fieldset>
+        <fieldset>
+          <legend>Mouse</legend>
+          <label class="field">Pointer speed on other machines
+            <span class="row"><input type="range" name="pointer_speed" min="0.25" max="3" step="0.05" /> <output id="speed-out"></output></span></label>
+          <label class="field">Edge resistance (how far to push against an edge before switching)
+            <span class="row"><input type="number" name="edge_resistance_px" min="0" max="500" step="5" /> px</span></label>
+        </fieldset>
+        <fieldset>
+          <legend>Screen size fallback</legend>
+          <p class="muted small">Used only when the screen size cannot be detected (Linux under pure Wayland).</p>
+          <span class="row"><input type="number" name="fallback_w" min="320" max="16000" /> × <input type="number" name="fallback_h" min="240" max="16000" /> px</span>
+        </fieldset>
+      </form>
+      <div class="card">
+        <h3>Security</h3>
+        <p class="muted">All traffic is encrypted with TLS. Machines prove their identity with a certificate created on first start; pairing confirms
+          it with a one-time code.</p>
+        <p class="small">This machine's fingerprint: <code id="fingerprint"></code></p>
+      </div>
+    </section>
+
+    <!-- Activity -->
+    <section id="tab-activity" class="panel">
+      <div class="panel-head"><div><h2>Activity</h2></div></div>
+      <ul id="log" class="log"></ul>
+    </section>
+  </main>
+
+  <!-- Pairing code modal (shown when another machine asks to pair) -->
+  <div id="pair-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h2>Pairing request</h2>
+      <p><strong id="pair-modal-name"></strong> wants to pair with this machine.</p>
+      <p>Type this code on <span id="pair-modal-name2"></span>:</p>
+      <div id="pair-modal-code" class="bigcode"></div>
+      <p class="muted small">Only accept if you started the pairing yourself. The code is different if someone intercepts the connection.</p>
+      <div class="actions end"><button id="pair-modal-cancel" class="btn">Reject</button></div>
+    </div>
+  </div>
+
+  <!-- Rename modal -->
+  <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <form id="rename-form" class="modal-box">
+      <h2>Rename this machine</h2>
+      <input id="rename-input" type="text" maxlength="40" autocomplete="off" />
+      <div class="actions end">
+        <button type="button" id="rename-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

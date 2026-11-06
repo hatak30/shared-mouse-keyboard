@@ -1,0 +1,5 @@
+# Allow members of the "input" group to create virtual input devices, which
+# Shared Mouse Keyboard needs to replay mouse and keyboard events from other
+# machines. Reading physical devices (/dev/input/event*) already requires the
+# "input" group on most distributions.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

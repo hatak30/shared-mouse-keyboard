@@ -12,6 +12,15 @@ pub struct Permission {
     pub help: String,
     /// Whether the UI can offer a "Request" / "Open settings" button.
     pub actionable: bool,
+    /// A recommendation, not a requirement (doesn't mark the tab as needing attention).
+    #[serde(default)]
+    pub optional: bool,
+    /// Label of the button that fixes it (default "Grant access").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<&'static str>,
+    /// Status shown when `granted` (default "Granted").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok_label: Option<&'static str>,
 }
 
 #[cfg(target_os = "macos")]
@@ -54,6 +63,9 @@ mod imp {
                        Restart the app after granting."
                     .into(),
                 actionable: true,
+                optional: false,
+                action: None,
+                ok_label: None,
             },
             Permission {
                 id: "input-monitoring",
@@ -63,6 +75,9 @@ mod imp {
                        System Settings → Privacy & Security → Input Monitoring."
                     .into(),
                 actionable: true,
+                optional: false,
+                action: None,
+                ok_label: None,
             },
             Permission {
                 id: "local-network",
@@ -72,8 +87,78 @@ mod imp {
                        If you declined: System Settings → Privacy & Security → Local Network."
                     .into(),
                 actionable: true,
+                optional: false,
+                action: None,
+                ok_label: None,
+            },
+            Permission {
+                id: "handoff",
+                name: "Handoff (Universal Clipboard)",
+                granted: !handoff_on(),
+                help: "Recommended off. Handoff makes macOS share the clipboard between your Macs too: \
+                       it downloads things copied on another Mac by itself (\"Pasting from …\"), \
+                       even when you didn't paste. Shared Mouse Keyboard already shares the clipboard, \
+                       and only copies files when you paste."
+                    .into(),
+                actionable: true,
+                optional: true,
+                action: Some("Turn off Handoff"),
+                ok_label: Some("Off"),
             },
         ]
+    }
+
+    const HANDOFF_DOMAIN: &str = "com.apple.coreservices.useractivityd";
+    const HANDOFF_KEYS: [&str; 2] = ["ActivityAdvertisingAllowed", "ActivityReceivingAllowed"];
+
+    /// Handoff is on unless both directions are switched off (missing = on).
+    fn handoff_on() -> bool {
+        use core_foundation::base::{CFType, TCFType};
+        use core_foundation_sys::preferences::*;
+        let app = CFString::new(HANDOFF_DOMAIN);
+        HANDOFF_KEYS.iter().any(|k| {
+            let key = CFString::new(k);
+            let v = unsafe {
+                CFPreferencesCopyValue(
+                    key.as_concrete_TypeRef(),
+                    app.as_concrete_TypeRef(),
+                    kCFPreferencesCurrentUser,
+                    kCFPreferencesCurrentHost,
+                )
+            };
+            if v.is_null() {
+                return true;
+            }
+            let v = unsafe { CFType::wrap_under_create_rule(v) };
+            v.downcast::<CFBoolean>().map_or_else(
+                || v.downcast::<core_foundation::number::CFNumber>().and_then(|n| n.to_i64()).is_none_or(|n| n != 0),
+                bool::from,
+            )
+        })
+    }
+
+    /// Switch Handoff off, as the switch in System Settings → General →
+    /// AirDrop & Handoff does.
+    fn turn_off_handoff() {
+        use core_foundation_sys::preferences::*;
+        let app = CFString::new(HANDOFF_DOMAIN);
+        unsafe {
+            for k in HANDOFF_KEYS {
+                let key = CFString::new(k);
+                CFPreferencesSetValue(
+                    key.as_concrete_TypeRef(),
+                    CFBoolean::false_value().as_CFTypeRef(),
+                    app.as_concrete_TypeRef(),
+                    kCFPreferencesCurrentUser,
+                    kCFPreferencesCurrentHost,
+                );
+            }
+            CFPreferencesSynchronize(app.as_concrete_TypeRef(), kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+        }
+        // The Handoff service reads the setting when it starts; launchd
+        // restarts it right away.
+        let _ = std::process::Command::new("/usr/bin/killall").arg("useractivityd").status();
+        tracing::info!("Handoff turned off");
     }
 
     pub fn request(id: &str) {
@@ -87,12 +172,22 @@ mod imp {
             "input-monitoring" => unsafe {
                 IOHIDRequestAccess(LISTEN_EVENT);
             },
+            "handoff" => {
+                turn_off_handoff();
+                return;
+            }
             _ => {}
         }
         open_settings(id);
     }
 
     pub fn open_settings(id: &str) {
+        if id == "handoff" {
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension")
+                .spawn();
+            return;
+        }
         let anchor = match id {
             "accessibility" => "Privacy_Accessibility",
             "input-monitoring" => "Privacy_ListenEvent",
@@ -143,6 +238,9 @@ mod imp {
                        To change later: Windows Security → Firewall → Allow an app through firewall."
                     .into(),
                 actionable: true,
+                optional: false,
+                action: None,
+                ok_label: None,
             },
             Permission {
                 id: "elevation",
@@ -152,6 +250,9 @@ mod imp {
                        (e.g. Task Manager, installers). Run the app as administrator to control those too."
                     .into(),
                 actionable: false,
+                optional: false,
+                action: None,
+                ok_label: None,
             },
         ]
     }
@@ -199,6 +300,9 @@ mod imp {
                 granted: can_read_input(),
                 help: "Run: sudo usermod -aG input $USER — then log out and back in.".into(),
                 actionable: false,
+                optional: false,
+                action: None,
+                ok_label: None,
             },
             Permission {
                 id: "uinput",
@@ -209,6 +313,9 @@ mod imp {
                        (also requires the 'input' group)."
                     .into(),
                 actionable: false,
+                optional: false,
+                action: None,
+                ok_label: None,
             },
         ];
         if wayland {
@@ -221,6 +328,9 @@ mod imp {
                        (Ctrl+Alt+Shift+Arrow) to switch, or log in with an X11 session."
                     .into(),
                 actionable: false,
+                optional: false,
+                action: None,
+                ok_label: None,
             });
         }
         v
@@ -243,5 +353,18 @@ mod imp {
 pub use imp::{check, open_settings, request};
 
 pub fn all_granted() -> bool {
-    check().iter().all(|p| p.granted || !p.actionable)
+    check().iter().all(|p| p.granted || !p.actionable || p.optional)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn check_lists_permissions() {
+        let perms = super::check();
+        for p in &perms {
+            println!("{} granted={} optional={}", p.id, p.granted, p.optional);
+        }
+        #[cfg(target_os = "macos")]
+        assert!(perms.iter().any(|p| p.id == "handoff" && p.optional));
+    }
 }

@@ -118,6 +118,12 @@ fn err(e: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
 
 fn read(ctx: &ClipboardContext, opts: &ReadOptions) -> anyhow::Result<Clip> {
     let mut data = ClipboardData::default();
+    if from_universal_clipboard() {
+        // Copied on another Apple device: macOS already shares it, and
+        // reading it here would make macOS download it right away ("Pasting
+        // from …"), even though nobody pasted.
+        return Ok(Clip::Data(data));
+    }
     if ctx.has(ContentFormat::Files) {
         if !opts.files {
             return Ok(Clip::Data(data));
@@ -169,6 +175,21 @@ fn write(ctx: &ClipboardContext, data: ClipboardData) -> anyhow::Result<()> {
 }
 
 /// Clipboard file lists come as plain paths (Windows) or `file://` URIs.
+/// True if the clipboard holds an item from macOS Universal Clipboard
+/// (Handoff). Only its type list is looked at, which doesn't fetch it.
+#[cfg(target_os = "macos")]
+fn from_universal_clipboard() -> bool {
+    use objc2_app_kit::NSPasteboard;
+    let pb = NSPasteboard::generalPasteboard();
+    let Some(types) = pb.types() else { return false };
+    types.iter().any(|t| t.to_string() == "com.apple.is-remote-clipboard")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn from_universal_clipboard() -> bool {
+    false
+}
+
 fn uri_to_path(s: &str) -> PathBuf {
     let Some(rest) = s.strip_prefix("file://") else {
         return PathBuf::from(s);

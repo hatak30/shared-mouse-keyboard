@@ -112,6 +112,10 @@ form.row input { flex: 1; max-width: 360px; }
 .xfer.done { border-color: var(--ok); }
 .xfer.failed { border-color: var(--bad); }
 .xfer.failed .sub { color: var(--bad); }
+.xfer.waiting { padding: 6px 14px; background: transparent; border-style: dashed; }
+.xfer.waiting .icon { font-size: 15px; }
+.xfer.waiting .title { font-weight: 500; font-size: 13px; color: var(--muted); }
+.xfer.waiting .sub { font-size: 11.5px; }
 
 /* Layout grid */
 .grid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; overflow: auto; }

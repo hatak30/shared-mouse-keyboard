@@ -83,7 +83,7 @@ pub fn scan(paths: &[PathBuf]) -> std::io::Result<LocalOffer> {
     let mut sources = Vec::new();
     for p in paths {
         let base = p.parent().unwrap_or(Path::new(""));
-        walk(p, base, &mut entries, &mut sources)?;
+        walk(p, base, &mut entries, &mut sources).map_err(|e| unreadable(p, e))?;
     }
     let total = entries.iter().map(|e: &FileMeta| e.size).sum();
     Ok(LocalOffer {
@@ -113,10 +113,27 @@ fn walk(p: &Path, base: &Path, entries: &mut Vec<FileMeta>, sources: &mut Vec<Pa
             }
         }
     } else if meta.is_file() {
+        // Checked now, not when another machine asks for it: macOS lets us
+        // see files in protected places (e.g. Mail attachments) but not open them.
+        std::fs::File::open(p)?;
         entries.push(FileMeta { rel_path: rel, is_dir: false, size: meta.len(), mtime: mtime_of(&meta) });
         sources.push(p.to_path_buf());
     }
     Ok(())
+}
+
+/// An error naming the file, explaining macOS privacy blocks.
+fn unreadable(p: &Path, e: std::io::Error) -> std::io::Error {
+    let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let why = if cfg!(target_os = "macos") && (e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1)) {
+        format!(
+            "macOS does not let Shared Mouse Keyboard read {name} (it is in a protected place, such as Mail's attachments). \
+             Drag it to a normal folder first, or allow Full Disk Access in System Settings → Privacy & Security."
+        )
+    } else {
+        format!("cannot read {name}: {e}")
+    };
+    std::io::Error::new(e.kind(), why)
 }
 
 /// Join a peer-supplied relative path onto `dir`, refusing anything that
@@ -278,24 +295,68 @@ pub fn default_download_root() -> PathBuf {
         .join("clipboard")
 }
 
-/// Directory for an incoming transfer under `root`. Keeps the newest
-/// `keep - 1` existing transfer folders and returns a fresh one.
-pub fn new_transfer_dir(root: &Path, keep: usize) -> std::io::Result<PathBuf> {
+/// A fresh directory for an incoming transfer under `root`.
+pub fn new_transfer_dir(root: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(root)?;
-    let mut existing: Vec<PathBuf> = std::fs::read_dir(root)?.flatten().map(|e| e.path()).collect();
-    existing.sort();
-    while existing.len() >= keep {
-        let _ = std::fs::remove_dir_all(existing.remove(0));
-    }
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
-    let dir = root.join(format!("{stamp}"));
+    let mut dir = root.join(format!("{stamp}"));
+    let mut n = 1;
+    while dir.exists() {
+        dir = root.join(format!("{stamp}-{n}"));
+        n += 1;
+    }
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Delete every transfer folder under `root` except those in `keep`, and
+/// those holding any of `in_use` (files on the clipboard right now).
+/// Returns how many bytes were freed.
+pub fn prune_cache(root: &Path, keep: &[PathBuf], in_use: &[PathBuf]) -> u64 {
+    let Ok(entries) = std::fs::read_dir(root) else { return 0 };
+    let mut freed = 0;
+    for dir in entries.flatten().map(|e| e.path()) {
+        if keep.contains(&dir) || in_use.iter().any(|p| p.starts_with(&dir)) {
+            continue;
+        }
+        freed += dir_size(&dir);
+        if let Err(e) = std::fs::remove_dir_all(&dir).or_else(|_| std::fs::remove_file(&dir)) {
+            tracing::warn!("cannot delete {}: {e}", dir.display());
+        }
+    }
+    freed
+}
+
+fn dir_size(p: &Path) -> u64 {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => std::fs::read_dir(p).map_or(0, |d| d.flatten().map(|e| dir_size(&e.path())).sum()),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prune_cache_keeps_running_and_clipboard_folders() {
+        let root = std::env::temp_dir().join(format!("smk-prune-{}", Uuid::new_v4()));
+        let (old, running, on_clip) = (
+            new_transfer_dir(&root).unwrap(),
+            new_transfer_dir(&root).unwrap(),
+            new_transfer_dir(&root).unwrap(),
+        );
+        std::fs::write(old.join("big.bin"), vec![0u8; 1000]).unwrap();
+        std::fs::write(on_clip.join("a.txt"), "x").unwrap();
+        let freed = prune_cache(&root, std::slice::from_ref(&running), &[on_clip.join("a.txt")]);
+        assert_eq!(freed, 1000);
+        assert!(!old.exists() && running.exists() && on_clip.exists());
+        // Clipboard changed to something else: everything not running goes.
+        prune_cache(&root, std::slice::from_ref(&running), &[]);
+        assert!(!on_clip.exists() && running.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn move_into_never_overwrites() {
@@ -310,6 +371,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "old");
         assert_eq!(std::fs::read_to_string(dst.join("a 2.txt")).unwrap(), "new");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_copied_file_is_refused_up_front() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("smk-unreadable-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("secret.pdf");
+        std::fs::write(&f, b"x").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&f).is_ok() {
+            return; // running as root
+        }
+        let Err(err) = scan(std::slice::from_ref(&f)) else { panic!("scan must fail") };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.to_string().contains("secret.pdf"), "{err}");
     }
 
     #[test]

@@ -456,10 +456,14 @@ function renderPermissions() {
   const box = $("#permissions");
   box.replaceChildren();
   for (const p of state.permissions) {
-    const pill = p.granted ? el("span", { class: "pill ok" }, "Granted") : el("span", { class: p.actionable ? "pill bad" : "pill warn" }, p.actionable ? "Required" : "Not granted");
+    const pill = p.granted
+      ? el("span", { class: "pill ok" }, p.ok_label || "Granted")
+      : p.optional
+        ? el("span", { class: "pill warn" }, "On")
+        : el("span", { class: p.actionable ? "pill bad" : "pill warn" }, p.actionable ? "Required" : "Not granted");
     const buttons = el("div", { class: "buttons" });
     if (p.actionable && !p.granted) {
-      buttons.append(el("button", { class: "btn primary", onclick: () => call("request_permission", { id: p.id }) }, "Grant access"));
+      buttons.append(el("button", { class: "btn primary", onclick: () => call("request_permission", { id: p.id }) }, p.action || "Grant access"));
     }
     if (p.actionable) {
       buttons.append(el("button", { class: "btn", onclick: () => call("open_permission_settings", { id: p.id }) }, "Open system settings"));
@@ -628,12 +632,15 @@ function renderTransfers() {
     let icon = t.incoming ? "📥" : "📤", title, sub, buttons = [], bar = null, cls = "xfer";
     switch (t.state) {
       case "pending": {
+        // Only an announcement: keep it quiet so it doesn't look like a copy.
         const mac = state.me.os === "MacOs";
-        title = `${what} copied on ${t.peer}`;
-        sub = `Nothing is copied until you paste. Press ${mac ? "⌘V" : "Ctrl+V"} where you want it${mac ? " — in a Finder window it is saved straight into that folder" : ""}, or choose a folder.`;
+        icon = "📋";
+        cls += " waiting";
+        title = `${t.peer} has ${what} on its clipboard`;
+        sub = `Not copied. Paste with ${mac ? "⌘V" : "Ctrl+V"} to fetch it${mac ? " (in Finder: into that folder)" : ""}.`;
         buttons = [
-          btn("Save to…", "primary", () => call("save_transfer_to", { id: t.id })),
-          el("button", { class: "btn small", title: "Download now and put it on the clipboard, e.g. to paste from a menu", onclick: () => call("start_transfer", { id: t.id }) }, "Fetch to clipboard"),
+          btn("Save to…", "", () => call("save_transfer_to", { id: t.id })),
+          el("button", { class: "btn small", title: "Download now and put it on the clipboard, e.g. to paste from a menu", onclick: () => call("start_transfer", { id: t.id }) }, "Fetch"),
           dismiss,
         ];
         break;
@@ -667,7 +674,7 @@ function renderTransfers() {
       default:
         icon = "⚠️";
         cls += " failed";
-        title = `Could not ${t.incoming ? "receive" : "send"} ${t.label}`;
+        title = !t.incoming && !t.peer ? "Could not share the copied files" : `Could not ${t.incoming ? "receive" : "send"} ${t.label}`;
         sub = t.error || "Unknown error.";
         buttons = [dismiss];
     }

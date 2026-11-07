@@ -6,6 +6,16 @@
   <string>Shared Mouse Keyboard finds and connects to your other computers on the local network.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>When you paste files copied on another computer into a Finder window, Shared Mouse Keyboard asks Finder which folder you are pasting into and saves the files there.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>To share files you copy from the Desktop with your other computers.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>To share files you copy from Documents with your other computers.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>To share files you copy from Downloads with your other computers.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>To share files you copy from external disks, and to save files pasted onto them.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>To share files you copy from network drives, and to save files pasted onto them.</string>
   <key>NSBonjourServices</key>
   <array/>
 </dict>

@@ -167,7 +167,8 @@ pub fn spawn(app: AppHandle, engine: EngineHandle) {
 }
 
 fn notify_changes(app: &AppHandle, transfers: &[UiTransfer], seen: &mut HashMap<Uuid, TransferState>) {
-    for t in transfers.iter().filter(|t| t.incoming) {
+    // Incoming copies, plus copied files this machine could not share.
+    for t in transfers.iter().filter(|t| t.incoming || (t.state == TransferState::Failed && t.peer.is_empty())) {
         let before = seen.insert(t.id, t.state);
         if before == Some(t.state) {
             continue;
@@ -185,6 +186,7 @@ fn notify_changes(app: &AppHandle, transfers: &[UiTransfer], seen: &mut HashMap<
                     None => "It's on the clipboard — paste it anywhere.".to_string(),
                 },
             ),
+            TransferState::Failed if !t.incoming => ("Could not share the copied files".to_string(), t.error.clone().unwrap_or_default()),
             TransferState::Failed => (
                 format!("Copying {} failed", t.label),
                 t.error.clone().unwrap_or_default(),

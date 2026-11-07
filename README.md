@@ -114,6 +114,7 @@ The app checks these at runtime and explains each one on the Permissions tab.
 - **Input Monitoring.** Required to read the keyboard and mouse. Go to System Settings → Privacy & Security → Input Monitoring.
 - **Local Network.** macOS asks on first launch (macOS 15+). If you declined, go to System Settings → Privacy & Security → Local Network.
 - The firewall may also ask whether to accept incoming connections. Click **Allow**.
+- **Handoff (recommended off).** If your Macs share an Apple ID, Handoff's Universal Clipboard also shares the clipboard. It downloads things copied on another Mac by itself (you see "Pasting from …"), even when nobody pasted. The Permissions tab shows whether it is on and has a **Turn off Handoff** button (or go to System Settings → General → AirDrop & Handoff). The app never reads clipboard items that came through Handoff.
 
 > macOS ties these permissions to the app's code signature. Build with `scripts/build-macos.sh` (`--install` also copies the app to /Applications and launches it). It signs with the first **Developer ID Application** certificate in your keychain, which keeps permissions across updates. Ad-hoc signed builds (no certificate) lose them on every rebuild. Set `APPLE_ID`, `APPLE_PASSWORD` (app-specific password) and `APPLE_TEAM_ID` to notarize as well, so other Macs open the app without a Gatekeeper warning.
 

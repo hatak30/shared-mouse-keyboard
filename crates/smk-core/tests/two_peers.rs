@@ -11,8 +11,28 @@ use smk_core::layout::{Layout, Placement};
 use smk_core::protocol::{InputEvent, Rect};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
-async fn engine(port: u16, screen: Rect) -> (EngineHandle, UnboundedReceiver<InputEvent>) {
-    let dir = std::env::temp_dir().join(format!("smk-test-{}", uuid::Uuid::new_v4()));
+/// A test's temporary folder, deleted when the test ends (even if it fails).
+struct Tmp(std::path::PathBuf);
+
+impl Tmp {
+    fn new() -> Self {
+        let dir = std::env::temp_dir().join(format!("smk-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+    fn join(&self, name: &str) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn engine(tmp: &Tmp, port: u16, screen: Rect) -> (EngineHandle, UnboundedReceiver<InputEvent>) {
+    let dir = tmp.join(&format!("node-{port}"));
     let downloads = dir.join("downloads");
     let (tx, rx) = unbounded_channel();
     let opts = StartOptions {
@@ -53,10 +73,11 @@ fn peer<'a>(s: &'a UiState, name: &str) -> Option<&'a smk_core::engine::UiPeer> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pair_sync_layout_and_forward_input() {
+    let tmp = Tmp::new();
     let screen_a = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
     let screen_b = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 };
-    let (a, _rx_a) = engine(25811, screen_a).await;
-    let (b, mut rx_b) = engine(25812, screen_b).await;
+    let (a, _rx_a) = engine(&tmp, 25811, screen_a).await;
+    let (b, mut rx_b) = engine(&tmp, 25812, screen_b).await;
     a.send(Command::SetName("alpha".into()));
     b.send(Command::SetName("beta".into()));
     wait_until("names applied", || a.state().me.name == "alpha" && b.state().me.name == "beta").await;
@@ -157,9 +178,10 @@ async fn pair_sync_layout_and_forward_input() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejecting_pairing_clears_both_sides() {
+    let tmp = Tmp::new();
     let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
-    let (a, _ra) = engine(25821, screen).await;
-    let (b, _rb) = engine(25822, screen).await;
+    let (a, _ra) = engine(&tmp, 25821, screen).await;
+    let (b, _rb) = engine(&tmp, 25822, screen).await;
     a.send(Command::SetName("alpha".into()));
     b.send(Command::SetName("beta".into()));
     a.send(Command::Connect("127.0.0.1:25822".into()));
@@ -180,9 +202,10 @@ async fn rejecting_pairing_clears_both_sides() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn blocked_or_closed_machines_decline_pairing() {
+    let tmp = Tmp::new();
     let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
-    let (a, _ra) = engine(25851, screen).await;
-    let (b, _rb) = engine(25852, screen).await;
+    let (a, _ra) = engine(&tmp, 25851, screen).await;
+    let (b, _rb) = engine(&tmp, 25852, screen).await;
     a.send(Command::SetName("alpha".into()));
     b.send(Command::SetName("beta".into()));
     a.send(Command::Connect("127.0.0.1:25852".into()));
@@ -223,10 +246,10 @@ async fn blocked_or_closed_machines_decline_pairing() {
 }
 
 /// Connect and pair two engines, with B placed to the right of A.
-async fn paired(pa: u16, pb: u16) -> (EngineHandle, EngineHandle, UnboundedReceiver<InputEvent>) {
+async fn paired(tmp: &Tmp, pa: u16, pb: u16) -> (EngineHandle, EngineHandle, UnboundedReceiver<InputEvent>) {
     let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
-    let (a, _ra) = engine(pa, screen).await;
-    let (b, rb) = engine(pb, screen).await;
+    let (a, _ra) = engine(tmp, pa, screen).await;
+    let (b, rb) = engine(tmp, pb, screen).await;
     a.send(Command::SetName("alpha".into()));
     b.send(Command::SetName("beta".into()));
     a.send(Command::Connect(format!("127.0.0.1:{pb}")));
@@ -264,12 +287,13 @@ fn transfer_on(s: &UiState, incoming: bool) -> Option<smk_core::engine::UiTransf
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn copied_folder_streams_only_when_pasted() {
+    let tmp = Tmp::new();
     use smk_core::engine::TransferState;
     use smk_core::keymap::ev;
-    let (a, b, mut rb) = paired(25831, 25832).await;
+    let (a, b, mut rb) = paired(&tmp, 25831, 25832).await;
 
     // A folder with a multi-chunk file.
-    let src = std::env::temp_dir().join(format!("smk-src-{}", uuid::Uuid::new_v4())).join("Album");
+    let src = tmp.join("src").join("Album");
     std::fs::create_dir_all(src.join("raw")).unwrap();
     let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
     std::fs::write(src.join("raw/photo.bin"), &big).unwrap();
@@ -313,9 +337,10 @@ async fn copied_folder_streams_only_when_pasted() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn save_to_folder_keeps_existing_files() {
+    let tmp = Tmp::new();
     use smk_core::engine::TransferState;
-    let (a, b, _rb) = paired(25861, 25862).await;
-    let root = std::env::temp_dir().join(format!("smk-save-{}", uuid::Uuid::new_v4()));
+    let (a, b, _rb) = paired(&tmp, 25861, 25862).await;
+    let root = tmp.join("save");
     let src = root.join("src");
     let dst = root.join("external disk");
     std::fs::create_dir_all(&src).unwrap();
@@ -343,9 +368,10 @@ async fn save_to_folder_keeps_existing_files() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_a_download_stops_it() {
+    let tmp = Tmp::new();
     use smk_core::engine::TransferState;
-    let (a, b, _rb) = paired(25841, 25842).await;
-    let src = std::env::temp_dir().join(format!("smk-src-{}", uuid::Uuid::new_v4()));
+    let (a, b, _rb) = paired(&tmp, 25841, 25842).await;
+    let src = tmp.join("src");
     std::fs::create_dir_all(&src).unwrap();
     let file = src.join("huge.bin");
     // Big sparse file: instant to create, far too big to finish in the test.

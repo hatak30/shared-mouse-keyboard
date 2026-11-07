@@ -162,6 +162,10 @@ pub enum Command {
     /// Internal: paste again into this app (files are on the clipboard now).
     #[doc(hidden)]
     Repaste(i64),
+    /// Internal: delete received copies that are no longer needed; the
+    /// paths are the files on the clipboard now (kept).
+    #[doc(hidden)]
+    PruneCache(Vec<std::path::PathBuf>),
     /// Offer these files to paired machines as if they had been copied.
     OfferFiles(Vec<std::path::PathBuf>),
     CancelTransfer(Uuid),
@@ -473,6 +477,9 @@ impl Engine {
         mut offer_rx: UnboundedReceiver<Result<LocalOffer, String>>,
         mut xfer_rx: UnboundedReceiver<XferEvent>,
     ) {
+        // Copies received in an earlier session are only kept while they
+        // are still on the clipboard.
+        self.check_cache();
         let mut tick = tokio::time::interval(Duration::from_secs(3));
         let mut fast = tokio::time::interval(Duration::from_millis(150));
         loop {
@@ -1145,14 +1152,40 @@ impl Engine {
                 let c = self.screen.center();
                 self.return_local(c);
             }
-            Command::StartTransfer(id) => self.start_incoming(id, None, None),
-            Command::SaveTransferTo(id, folder) => self.start_incoming(id, Some(folder), None),
+            Command::StartTransfer(id) => {
+                self.log("Fetching the copied files to the clipboard (requested in the control panel)");
+                self.start_incoming(id, None, None)
+            }
+            Command::SaveTransferTo(id, folder) => {
+                self.log(format!("Saving the copied files to {} (chosen with Save to…)", folder.display()));
+                self.start_incoming(id, Some(folder), None)
+            }
             Command::PasteResolved(id, target) => {
                 self.paste_resolving = None;
+                self.log(match &target {
+                    PasteTarget::Folder(f) => format!("Paste into {} — fetching the copied files there", f.display()),
+                    PasteTarget::App(_) => "Paste — fetching the copied files to the clipboard".to_string(),
+                });
                 match target {
                     PasteTarget::Folder(f) => self.start_incoming(id, Some(f), None),
                     PasteTarget::App(app) => self.start_incoming(id, None, app),
                 }
+            }
+            Command::PruneCache(in_use) => {
+                // Folders still being downloaded into are kept too.
+                let keep: Vec<std::path::PathBuf> = self
+                    .transfers
+                    .iter()
+                    .filter(|t| t.ui.incoming && t.ui.state == TransferState::Running && t.ui.saved_to.is_none())
+                    .filter_map(|t| t.dir.clone())
+                    .collect();
+                let root = self.cache_root();
+                tokio::task::spawn_blocking(move || {
+                    let freed = transfer::prune_cache(&root, &keep, &in_use);
+                    if freed > 0 {
+                        tracing::info!("deleted {} of received copies no longer on the clipboard", human_bytes(freed));
+                    }
+                });
             }
             Command::Repaste(app) => {
                 if self.opts.os_input && paste::front_app() == Some(app) {
@@ -1443,23 +1476,63 @@ impl Engine {
 
     fn read_clipboard(&mut self) {
         if !self.cfg.settings.clipboard_enabled || !self.peers.values().any(|p| p.trusted) {
+            // Not shared, but received copies no longer on the clipboard
+            // still have to go.
+            self.check_cache();
             return;
         }
         let Some(cb) = self.clipboard.clone() else { return };
         let opts = ReadOptions { files: self.cfg.settings.clipboard_files_enabled };
         let tx = self.clip_tx.clone();
         let offer_tx = self.offer_tx.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        let root = self.cache_root();
+        if !opts.files {
+            // Files on the clipboard aren't listed by this read.
+            self.check_cache();
+        }
+        let lists_files = opts.files;
         tokio::task::spawn_blocking(move || match cb.read(opts) {
-            Ok(Clip::Data(d)) if !d.is_empty() => {
-                let _ = tx.send(d);
+            Ok(Clip::Data(d)) => {
+                if lists_files {
+                    let _ = cmd_tx.send(Command::PruneCache(Vec::new()));
+                }
+                if !d.is_empty() {
+                    let _ = tx.send(d);
+                }
             }
-            Ok(Clip::Data(_)) => {}
             // Only names and sizes are collected here; contents are streamed
             // later to the machine that needs them.
             Ok(Clip::Files(paths)) => {
-                let _ = offer_tx.send(transfer::scan(&paths).map_err(|e| e.to_string()));
+                let _ = cmd_tx.send(Command::PruneCache(paths.clone()));
+                // Our own received copy back on the clipboard: not news.
+                if !paths.iter().all(|p| p.starts_with(&root)) {
+                    let _ = offer_tx.send(transfer::scan(&paths).map_err(|e| e.to_string()));
+                }
             }
             Err(e) => tracing::warn!("clipboard read failed: {e}"),
+        });
+    }
+
+    fn cache_root(&self) -> std::path::PathBuf {
+        self.opts.download_root.clone().unwrap_or_else(transfer::default_download_root)
+    }
+
+    /// Read which files are on the clipboard, then prune the cache.
+    fn check_cache(&self) {
+        let root = self.cache_root();
+        let (cb, cmd_tx) = (self.clipboard.clone(), self.cmd_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            if !root.read_dir().is_ok_and(|mut d| d.next().is_some()) {
+                return;
+            }
+            let in_use = match cb.map(|cb| cb.read(ReadOptions { files: true })) {
+                Some(Ok(Clip::Files(paths))) => paths,
+                Some(Ok(Clip::Data(_))) | None => Vec::new(),
+                // Unsure what is on the clipboard: keep everything.
+                Some(Err(_)) => return,
+            };
+            let _ = cmd_tx.send(Command::PruneCache(in_use));
         });
     }
 
@@ -1555,7 +1628,32 @@ impl Engine {
         let local = match res {
             Ok(l) => l,
             Err(e) => {
-                self.log(format!("Could not read the copied files: {e}"));
+                // Shown as a failed copy (not just in the log) so it is seen
+                // here, where the files were copied, instead of failing later
+                // on the machine that pastes them.
+                self.supersede_local_offer();
+                self.push_transfer(Xfer {
+                    ui: UiTransfer {
+                        id: Uuid::new_v4(),
+                        incoming: false,
+                        peer: String::new(),
+                        label: "Copied files".into(),
+                        files: 0,
+                        total: 0,
+                        done: 0,
+                        state: TransferState::Failed,
+                        error: Some(e.clone()),
+                        started_ms: None,
+                        finished_ms: Some(now_ms()),
+                        saved_to: None,
+                        paths: Vec::new(),
+                    },
+                    abort: None,
+                    dir: None,
+                    from: None,
+                    repaste: None,
+                });
+                self.log(format!("Could not share the copied files: {e}"));
                 return;
             }
         };
@@ -1673,8 +1771,7 @@ impl Engine {
                 std::fs::create_dir_all(&d).map(|_| d)
             }
             None => {
-                let root = self.opts.download_root.clone().unwrap_or_else(transfer::default_download_root);
-                transfer::new_transfer_dir(&root, 4)
+                transfer::new_transfer_dir(&self.cache_root())
             }
         };
         let dir = match dir {
@@ -1826,8 +1923,10 @@ impl Engine {
                             self.clip_ignore_until = Instant::now() + Duration::from_millis(1500);
                             self.clip_pending = None;
                             let cmd_tx = self.cmd_tx.clone();
-                            tokio::task::spawn_blocking(move || match cb.write_files(paths) {
+                            tokio::task::spawn_blocking(move || match cb.write_files(paths.clone()) {
                                 Ok(()) => {
+                                    // The copy it replaces on the clipboard isn't needed any more.
+                                    let _ = cmd_tx.send(Command::PruneCache(paths));
                                     if let Some(app) = repaste {
                                         let _ = cmd_tx.send(Command::Repaste(app));
                                     }

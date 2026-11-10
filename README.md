@@ -234,7 +234,8 @@ packaging/linux/       udev rule and module config for uinput
 - Dragging files or windows *across* machines isn't supported. Copy and paste instead.
 - The local cursor isn't hidden while you control another machine on Windows/Linux. It stays parked in the centre of the screen.
 - Linux touchpads: basic one-finger movement and physical clicks are forwarded. Tap-to-click and gestures are not.
-- Planned: autostart option, per-edge offsets for screens of different sizes, multi-monitor dead-zone handling, and a clipboard-on-demand mode for very large files.
+- A monitor cabled to two machines (switched with its input button) still counts as attached on the machine it isn't showing, so the cursor can cross into it unseen. Arrange it on the side away from the other machine, or use the hotkeys.
+- Planned: per-edge offsets for screens of different sizes, and multi-monitor dead-zone handling.
 
 ## License
 

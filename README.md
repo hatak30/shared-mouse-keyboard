@@ -132,6 +132,34 @@ The app checks these at runtime and explains each one on the Permissions tab.
   ```
 - **Wayland.** Input capture and injection work on both X11 and Wayland, because they go through the kernel. Under a pure Wayland session, however, apps can't read the global cursor position, so switching by pushing against an edge isn't available there. Use the hotkeys, or log in with an X11 session. The clipboard works on both.
 
+## Android (experimental)
+
+The Android app lives in `android/` (Kotlin, Jetpack Compose). It runs the same Rust engine through JNI (`crates/smk-android`).
+
+- **Controlled by a computer.** Needs the app's accessibility service. A click becomes a tap, the wheel a swipe, typing edits the focused text field, and a cursor is drawn on screen. Dragging is replayed as a swipe when the button is released. Only US-layout characters are typed.
+- **Controlling a computer.** The Machines tab has a **Control** button that turns the phone into a touchpad and keyboard.
+- Text clipboard only. Android lets only the foreground app read the clipboard, so copy on the phone while the app is open. Copied files are saved to the app's Downloads folder on request.
+- Machines running an older version can't talk to Android devices (new system type in the handshake).
+
+Build (needs the Android SDK/NDK, `cargo install cargo-ndk` and the Rust Android targets):
+
+```sh
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+cd android && ./gradlew assembleDebug     # builds the Rust library too; add -PskipRust to skip it
+```
+
+## iOS (experimental)
+
+`ios/` holds a SwiftUI app that runs the same engine through a C interface (`crates/smk-ios`). iOS lets apps neither capture nor inject input, so an iPhone or iPad works only as a **remote**: pair it with a computer and use **Control** to turn the screen into a touchpad and keyboard (one finger moves, two scroll, taps click, US-layout characters). Computers cannot control it, and there is no clipboard sharing.
+
+UDP discovery needs Apple's multicast entitlement on real devices, so add machines by address there. Keep the app open while controlling: iOS suspends it in the background.
+
+```sh
+brew install xcodegen
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+cd ios && xcodegen generate && open SharedMouseKeyboard.xcodeproj   # the build phase compiles the Rust library
+```
+
 ## Network
 
 | Port | Protocol | Purpose |

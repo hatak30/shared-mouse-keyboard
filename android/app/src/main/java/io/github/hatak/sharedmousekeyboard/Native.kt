@@ -16,4 +16,7 @@ object Native {
     @JvmStatic external fun input(kind: Int, a: Double, b: Double)
 
     @JvmStatic external fun clipboardChanged()
+
+    /** The screenshot asked for by [Host.captureScreen]: PNG bytes, or null with an error. */
+    @JvmStatic external fun snapshot(png: ByteArray?, error: String)
 }

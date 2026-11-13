@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jdouble, jint, jstring, JNI_FALSE, JNI_TRUE};
 use jni::{JNIEnv, JavaVM};
 use smk_core::android_host::{self, AndroidHost};
@@ -85,6 +85,10 @@ impl AndroidHost for JniHost {
             env.call_method(obj, "permissionGranted", "(Ljava/lang/String;)Z", &[JValue::Object(&s)])?.z()
         })
         .unwrap_or(false)
+    }
+
+    fn capture_screen(&self) -> bool {
+        self.call(|env, obj| env.call_method(obj, "captureScreen", "()Z", &[])?.z()).unwrap_or(false)
     }
 
     fn open_settings(&self, id: &str) {
@@ -180,4 +184,19 @@ pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_input(
 #[no_mangle]
 pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_clipboardChanged(_env: JNIEnv, _class: JClass) {
     android_host::notify_clipboard_changed();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_snapshot(
+    mut env: JNIEnv,
+    _class: JClass,
+    png: JByteArray,
+    error: JString,
+) {
+    let result = if png.is_null() {
+        Err(jstr(&mut env, &error))
+    } else {
+        env.convert_byte_array(&png).map_err(|e| e.to_string())
+    };
+    embed::snapshot_ready(result);
 }

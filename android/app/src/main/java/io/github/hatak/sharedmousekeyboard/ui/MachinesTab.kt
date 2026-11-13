@@ -116,6 +116,7 @@ private fun PeerCard(p: Peer) {
             }
             p.trusted -> ButtonRow {
                 if (p.connected) Button(onClick = { send("control_peer", p.nodeId) }) { Text("Control") }
+                if (p.connected) OutlinedButton(onClick = { send("send_snapshot", p.nodeId) }) { Text("Send screenshot") }
                 OutlinedButton(onClick = { send("unpair", p.nodeId) }) { Text("Unpair") }
             }
             else -> ButtonRow {

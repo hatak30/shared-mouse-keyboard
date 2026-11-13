@@ -3,6 +3,7 @@ package io.github.hatak.sharedmousekeyboard
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -11,6 +12,7 @@ import android.graphics.PixelFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.ViewConfiguration
@@ -94,6 +96,28 @@ class InputService : AccessibilityService() {
                 3 -> key(a, b != 0)
             }
         }
+        return true
+    }
+
+    // ---- snapshot
+
+    fun takeSnapshot(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 30) return false
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(result: ScreenshotResult) {
+                Thread {
+                    val bytes = runCatching {
+                        result.hardwareBuffer.use { buffer ->
+                            val bitmap = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("no bitmap")
+                            java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                        }
+                    }
+                    Native.snapshot(bytes.getOrNull(), bytes.exceptionOrNull()?.message.orEmpty())
+                }.start()
+            }
+
+            override fun onFailure(errorCode: Int) = Native.snapshot(null, "Android refused the screenshot (code $errorCode)")
+        })
         return true
     }
 

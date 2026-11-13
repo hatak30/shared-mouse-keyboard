@@ -155,6 +155,14 @@ pub enum Command {
     /// physical edge to push against, e.g. a phone used as a touchpad).
     ControlPeer(Uuid),
     RefreshPermissions,
+    /// Phone: take a screenshot and send it to this machine.
+    SendSnapshot(Uuid),
+    /// Computer: ask this phone (or, with `None`, the one being controlled or
+    /// the first connected one) for a screenshot.
+    RequestSnapshot(Option<Uuid>),
+    /// Internal: the screenshot the phone was capturing is ready.
+    #[doc(hidden)]
+    SnapshotReady(Result<Vec<u8>, String>),
     /// Download a pending incoming transfer now and put it on the clipboard.
     StartTransfer(Uuid),
     /// Download a pending incoming transfer straight into this folder.
@@ -337,6 +345,8 @@ struct Engine {
     /// The V of a paste chord from the controlling machine was swallowed.
     remote_paste_v: bool,
     transfers: Vec<Xfer>,
+    /// Machines waiting for the screenshot being captured.
+    snapshot_for: Vec<Uuid>,
     clip_ignore_until: Instant,
     clip_last_hash: Option<[u8; 32]>,
     clip_pending: Option<Instant>,
@@ -456,6 +466,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         paste_resolving: None,
         remote_paste_v: false,
         transfers: Vec::new(),
+        snapshot_for: Vec::new(),
         clip_ignore_until: Instant::now(),
         clip_last_hash: None,
         clip_pending: None,
@@ -758,6 +769,16 @@ impl Engine {
                 self.write_clipboard(data);
             }
             Message::ClipboardFiles(offer) => self.on_remote_offer(conn, offer),
+            Message::SnapshotRequest => {
+                if let Some(node) = self.peers.get(&conn).and_then(|p| p.node_id()) {
+                    self.start_snapshot(node);
+                }
+            }
+            Message::Snapshot(png) => self.on_snapshot(conn, png),
+            Message::SnapshotError(reason) => {
+                let name = self.peers.get(&conn).and_then(|p| p.hello.as_ref()).map(|h| h.name.clone()).unwrap_or_default();
+                self.log(format!("{name} could not take a snapshot: {reason}"));
+            }
             // Transfer frames only belong on transfer connections.
             Message::FetchFiles { .. } | Message::FileData { .. } | Message::FilesDone | Message::FilesError(_) => {}
         }
@@ -1229,6 +1250,22 @@ impl Engine {
                 self.try_start_capture();
                 self.dirty = true;
             }
+            Command::SendSnapshot(node) => self.start_snapshot(node),
+            Command::RequestSnapshot(node) => self.request_snapshot(node),
+            Command::SnapshotReady(result) => {
+                for node in std::mem::take(&mut self.snapshot_for) {
+                    let msg = match &result {
+                        Ok(png) => Message::Snapshot(png.clone()),
+                        Err(e) => Message::SnapshotError(e.clone()),
+                    };
+                    if let Some((conn, _)) = self.peer_by_node(node) {
+                        self.send_to(conn, msg);
+                    }
+                }
+                if let Err(e) = &result {
+                    self.log(format!("Snapshot failed: {e}"));
+                }
+            }
         }
     }
 
@@ -1292,6 +1329,10 @@ impl Engine {
                 self.hotkey_switch(dir);
                 return;
             }
+            if code == ev::S {
+                self.request_snapshot(None);
+                return;
+            }
             if code == ev::ENTER || code == ev::KPENTER {
                 let c = self.screen.center();
                 self.return_local(c);
@@ -1310,6 +1351,58 @@ impl Engine {
             }
             self.send_to(conn, Message::Input(InputEvent::Key { code: out, down }));
         }
+    }
+
+    fn start_snapshot(&mut self, node: Uuid) {
+        if !self.peer_by_node(node).is_some_and(|(_, p)| p.trusted) {
+            return;
+        }
+        let started = crate::android_host::host().is_some_and(|h| h.capture_screen());
+        if started {
+            if !self.snapshot_for.contains(&node) {
+                self.snapshot_for.push(node);
+            }
+        } else if let Some((conn, _)) = self.peer_by_node(node) {
+            let reason = "turn on the accessibility service (Android 11 or newer)".to_string();
+            self.log(format!("Cannot take a snapshot: {reason}"));
+            self.send_to(conn, Message::SnapshotError(reason));
+        }
+    }
+
+    fn request_snapshot(&mut self, node: Option<Uuid>) {
+        let target = node.or_else(|| match self.control {
+            Control::Remote { node, os: Os::Android, .. } => Some(node),
+            _ => self
+                .peers
+                .values()
+                .filter(|p| p.trusted && p.hello.as_ref().is_some_and(|h| h.os == Os::Android))
+                .find_map(|p| p.node_id()),
+        });
+        let Some((conn, name)) = target
+            .and_then(|n| self.peer_by_node(n))
+            .filter(|(_, p)| p.trusted)
+            .map(|(c, p)| (c, p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default()))
+        else {
+            self.log("No connected phone to take a snapshot from");
+            return;
+        };
+        self.send_to(conn, Message::SnapshotRequest);
+        self.log(format!("Asking {name} for a snapshot…"));
+    }
+
+    fn on_snapshot(&mut self, conn: ConnId, png: Vec<u8>) {
+        let name = self.peers.get(&conn).and_then(|p| p.hello.as_ref()).map(|h| h.name.clone()).unwrap_or_default();
+        let dir = dirs::download_dir().unwrap_or_else(|| self.cache_root());
+        let file = dir.join(format!("Snapshot {} {}.png", name.replace(['/', '\\'], "_"), now_ms()));
+        let path = file.display().to_string();
+        let data = png.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, data)) {
+                tracing::warn!("could not save snapshot: {e}");
+            }
+        });
+        self.write_clipboard(ClipboardData { image_png: Some(png), ..Default::default() });
+        self.log(format!("Snapshot from {name} saved to {path} and copied to the clipboard"));
     }
 
     fn hotkey_mods_held(&self) -> bool {

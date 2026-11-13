@@ -83,6 +83,13 @@ pub fn input(kind: i32, a: f64, b: f64) {
     }
 }
 
+/// The app finished (or failed) capturing the screen for a snapshot.
+pub fn snapshot_ready(result: Result<Vec<u8>, String>) {
+    if let Some(engine) = ENGINE.lock().as_ref() {
+        engine.send(Command::SnapshotReady(result));
+    }
+}
+
 pub fn parse_command(name: &str, a: &str, b: &str) -> Result<Command, String> {
     let id = || Uuid::parse_str(a).map_err(|e| e.to_string());
     Ok(match name {
@@ -108,6 +115,8 @@ pub fn parse_command(name: &str, a: &str, b: &str) -> Result<Command, String> {
         "cancel_transfer" => Command::CancelTransfer(id()?),
         "dismiss_transfer" => Command::DismissTransfer(id()?),
         "refresh_permissions" => Command::RefreshPermissions,
+        "send_snapshot" => Command::SendSnapshot(id()?),
+        "request_snapshot" => Command::RequestSnapshot(Uuid::parse_str(a).ok()),
         other => return Err(format!("unknown command {other}")),
     })
 }

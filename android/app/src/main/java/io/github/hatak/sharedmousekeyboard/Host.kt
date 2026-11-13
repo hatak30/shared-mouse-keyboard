@@ -50,6 +50,8 @@ object Host {
         InputService.instance?.inject(kind, x, y, a, b) ?: false
 
     /** The engine works in density-independent units so a pointer moves the same distance on any phone. */
+    fun captureScreen(): Boolean = InputService.instance?.takeSnapshot() ?: false
+
     fun screenWidth(): Int = (pixelWidth() / density()).toInt()
 
     fun screenHeight(): Int = (pixelHeight() / density()).toInt()

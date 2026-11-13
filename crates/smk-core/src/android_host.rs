@@ -24,6 +24,11 @@ pub trait AndroidHost: Send + Sync {
     /// Whether the permission with this id (see `permissions`) is granted.
     fn permission_granted(&self, id: &str) -> bool;
     fn open_settings(&self, id: &str);
+    /// Start capturing the screen; the PNG arrives through `embed::snapshot_ready`.
+    /// Returns false when the app cannot do it right now.
+    fn capture_screen(&self) -> bool {
+        false
+    }
 }
 
 static HOST: OnceLock<Arc<dyn AndroidHost>> = OnceLock::new();

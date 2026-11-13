@@ -402,6 +402,13 @@ function machineCard(p) {
       onclick: () => confirmInline(buttons, `Block ${p.name}?`, () => call("block", { nodeId: p.node_id })),
     }, "Block"));
   }
+  if (p.trusted && p.connected && p.os === "Android") {
+    buttons.append(el("button", {
+      class: "btn",
+      title: "Take a screenshot of the phone; it is copied to the clipboard and saved to Downloads",
+      onclick: () => call("request_snapshot", { nodeId: p.node_id }),
+    }, "Snapshot"));
+  }
   if (p.trusted) {
     buttons.append(el("button", {
       class: "btn danger",

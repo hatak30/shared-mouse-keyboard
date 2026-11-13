@@ -405,7 +405,7 @@ async fn cancelling_a_download_stops_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pointer_speed_scales_remote_motion() {
     let tmp = Tmp::new();
-    let (a, _b, mut rb) = paired(&tmp, 25841, 25842).await;
+    let (a, _b, mut rb) = paired(&tmp, 25871, 25872).await;
     for speed in [1.0, 3.0] {
         let mut settings = a.state().settings.clone();
         settings.pointer_speed = speed;
@@ -420,4 +420,12 @@ async fn pointer_speed_scales_remote_motion() {
         wait_until("home", || a.state().controlling.is_none()).await;
         while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(200), rb.recv()).await {}
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_request_is_answered_with_an_error_on_a_machine_that_is_not_a_phone() {
+    let tmp = Tmp::new();
+    let (a, b, _rb) = paired(&tmp, 25881, 25882).await;
+    a.send(Command::RequestSnapshot(Some(b.state().me.node_id)));
+    wait_until("error reaches A", || a.state().log.iter().any(|l| l.text.contains("could not take a snapshot"))).await;
 }

@@ -147,6 +147,11 @@ pub enum Message {
     FileData { index: u32, data: Vec<u8> },
     FilesDone,
     FilesError(String),
+    /// Ask a phone to send a screenshot of its screen.
+    SnapshotRequest,
+    /// A PNG screenshot, sent by the phone that took it.
+    Snapshot(Vec<u8>),
+    SnapshotError(String),
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> anyhow::Result<()> {

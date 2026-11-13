@@ -1,0 +1,2 @@
+-keep class io.github.hatak.sharedmousekeyboard.Native { *; }
+-keep class io.github.hatak.sharedmousekeyboard.Host { *; }

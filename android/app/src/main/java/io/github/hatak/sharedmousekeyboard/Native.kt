@@ -1,0 +1,19 @@
+package io.github.hatak.sharedmousekeyboard
+
+object Native {
+    init {
+        System.loadLibrary("smk_android")
+    }
+
+    @JvmStatic external fun start(host: Any, configDir: String, downloadDir: String): Boolean
+
+    @JvmStatic external fun state(): String
+
+    /** Returns an error message, or an empty string. */
+    @JvmStatic external fun command(name: String, a: String, b: String): String
+
+    /** kind: 0 motion(dx, dy), 1 button(index, down), 2 scroll(dx, dy), 3 key(evdev code, down). */
+    @JvmStatic external fun input(kind: Int, a: Double, b: Double)
+
+    @JvmStatic external fun clipboardChanged()
+}

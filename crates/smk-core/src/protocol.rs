@@ -19,6 +19,8 @@ pub enum Os {
     Windows,
     Linux,
     Other,
+    Android,
+    Ios,
 }
 
 impl Os {
@@ -29,6 +31,10 @@ impl Os {
             Os::Windows
         } else if cfg!(target_os = "linux") {
             Os::Linux
+        } else if cfg!(target_os = "android") {
+            Os::Android
+        } else if cfg!(target_os = "ios") {
+            Os::Ios
         } else {
             Os::Other
         }

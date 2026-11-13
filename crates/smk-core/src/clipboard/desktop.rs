@@ -1,12 +1,4 @@
-//! Clipboard access: text, HTML, RTF, images, and file references.
-//!
-//! A dedicated thread owns the platform clipboard (some platforms require the
-//! owner to stay alive to serve paste requests). Copied *files* are only
-//! reported as paths here; their contents travel via [`crate::transfer`] and
-//! are placed back on the receiver's clipboard as file references.
-
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 use clipboard_rs::common::RustImage;
 use clipboard_rs::{
@@ -15,100 +7,43 @@ use clipboard_rs::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::{Clip, ReadOptions};
 use crate::protocol::ClipboardData;
 
-pub struct ReadOptions {
-    pub files: bool,
-}
+pub struct Backend(ClipboardContext);
 
-/// What is on the local clipboard.
-#[derive(Debug)]
-pub enum Clip {
-    Data(ClipboardData),
-    Files(Vec<PathBuf>),
-}
-
-enum Cmd {
-    Read(ReadOptions, mpsc::Sender<anyhow::Result<Clip>>),
-    Write(ClipboardData, mpsc::Sender<anyhow::Result<()>>),
-    WriteFiles(Vec<PathBuf>, mpsc::Sender<anyhow::Result<()>>),
-}
-
-#[derive(Clone)]
-pub struct ClipboardHandle {
-    tx: mpsc::Sender<Cmd>,
-}
-
-impl ClipboardHandle {
-    /// Start the clipboard owner thread and a change watcher that sends `()`
-    /// on `changed` whenever the local clipboard changes.
-    pub fn start(changed: UnboundedSender<()>) -> anyhow::Result<Self> {
-        let (tx, rx) = mpsc::channel::<Cmd>();
-        std::thread::Builder::new()
-            .name("smk-clipboard".into())
-            .spawn(move || {
-                let ctx = match ClipboardContext::new() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("clipboard unavailable: {e}");
-                        return;
-                    }
-                };
-                for cmd in rx {
-                    match cmd {
-                        Cmd::Read(opts, reply) => {
-                            let _ = reply.send(read(&ctx, &opts));
-                        }
-                        Cmd::Write(data, reply) => {
-                            let _ = reply.send(write(&ctx, data));
-                        }
-                        Cmd::WriteFiles(paths, reply) => {
-                            let files = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-                            let _ = reply.send(ctx.set_files(files).map_err(err));
-                        }
-                    }
-                }
-            })?;
-
-        std::thread::Builder::new()
-            .name("smk-clipboard-watch".into())
-            .spawn(move || {
-                struct Handler(UnboundedSender<()>);
-                impl ClipboardHandler for Handler {
-                    fn on_clipboard_change(&mut self) {
-                        let _ = self.0.send(());
-                    }
-                }
-                match ClipboardWatcherContext::new() {
-                    Ok(mut w) => {
-                        w.add_handler(Handler(changed));
-                        w.start_watch();
-                    }
-                    Err(e) => tracing::error!("clipboard watcher unavailable: {e}"),
-                }
-            })?;
-        Ok(Self { tx })
+impl Backend {
+    pub fn new() -> anyhow::Result<Self> {
+        ClipboardContext::new().map(Self).map_err(err)
     }
 
-    /// Read the clipboard (blocking; call from `spawn_blocking`).
-    pub fn read(&self, opts: ReadOptions) -> anyhow::Result<Clip> {
-        let (tx, rx) = mpsc::channel();
-        self.tx.send(Cmd::Read(opts, tx))?;
-        rx.recv()?
+    pub fn read(&self, opts: &ReadOptions) -> anyhow::Result<Clip> {
+        read(&self.0, opts)
     }
 
-    /// Replace the clipboard (blocking; call from `spawn_blocking`).
     pub fn write(&self, data: ClipboardData) -> anyhow::Result<()> {
-        let (tx, rx) = mpsc::channel();
-        self.tx.send(Cmd::Write(data, tx))?;
-        rx.recv()?
+        write(&self.0, data)
     }
 
-    /// Put file references on the clipboard (blocking).
     pub fn write_files(&self, paths: Vec<PathBuf>) -> anyhow::Result<()> {
-        let (tx, rx) = mpsc::channel();
-        self.tx.send(Cmd::WriteFiles(paths, tx))?;
-        rx.recv()?
+        let files = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        self.0.set_files(files).map_err(err)
+    }
+}
+
+pub fn watch(changed: UnboundedSender<()>) {
+    struct Handler(UnboundedSender<()>);
+    impl ClipboardHandler for Handler {
+        fn on_clipboard_change(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    match ClipboardWatcherContext::new() {
+        Ok(mut w) => {
+            w.add_handler(Handler(changed));
+            w.start_watch();
+        }
+        Err(e) => tracing::error!("clipboard watcher unavailable: {e}"),
     }
 }
 

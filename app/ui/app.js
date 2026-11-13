@@ -21,8 +21,8 @@ const el = (tag, attrs = {}, ...children) => {
   return e;
 };
 
-const OS_LABEL = { MacOs: "macOS", Windows: "Windows", Linux: "Linux", Other: "Other" };
-const OS_ICON = { MacOs: "🍎", Windows: "🪟", Linux: "🐧", Other: "🖥️" };
+const OS_LABEL = { MacOs: "macOS", Windows: "Windows", Linux: "Linux", Android: "Android", Ios: "iOS", Other: "Other" };
+const OS_ICON = { MacOs: "🍎", Windows: "🪟", Linux: "🐧", Android: "🤖", Ios: "📱", Other: "🖥️" };
 
 let state = null;
 const sigs = {}; // last render signature per section

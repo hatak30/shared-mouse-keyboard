@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/smk-core", "app"]
+members = ["crates/smk-core", "crates/smk-android", "crates/smk-ios", "app"]
 
 [workspace.package]
 version = "0.4.1"

@@ -151,6 +151,9 @@ pub enum Command {
     SetSettings(Settings),
     SetName(String),
     ReturnHome,
+    /// Start sending our input to this machine (used where there is no
+    /// physical edge to push against, e.g. a phone used as a touchpad).
+    ControlPeer(Uuid),
     RefreshPermissions,
     /// Download a pending incoming transfer now and put it on the clipboard.
     StartTransfer(Uuid),
@@ -1151,6 +1154,13 @@ impl Engine {
             Command::ReturnHome => {
                 let c = self.screen.center();
                 self.return_local(c);
+            }
+            Command::ControlPeer(node) => {
+                if let Some(rect) = self.peer_rect(node) {
+                    self.switch_to(node, rect.center());
+                } else {
+                    self.log("That machine is not connected or not paired");
+                }
             }
             Command::StartTransfer(id) => {
                 self.log("Fetching the copied files to the clipboard (requested in the control panel)");

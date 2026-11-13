@@ -17,6 +17,14 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub use crate::protocol::{InputEvent, MouseButton, Rect};
 
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(target_os = "android")]
+pub use android::*;
+#[cfg(target_os = "ios")]
+mod ios;
+#[cfg(target_os = "ios")]
+pub use ios::*;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
@@ -29,6 +37,10 @@ pub use macos::*;
 mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
+
+/// Only meaningful on iOS, where the app reports the screen size.
+#[cfg(not(target_os = "ios"))]
+pub fn set_screen_size(_w: u32, _h: u32) {}
 
 /// Marker attached to events we synthesise so our own hooks can ignore them.
 pub const INJECTED_MAGIC: i64 = 0x534d_4b21; // "SMK!"

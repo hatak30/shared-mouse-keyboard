@@ -49,9 +49,16 @@ object Host {
     fun inject(kind: Int, x: Double, y: Double, a: Int, b: Int): Boolean =
         InputService.instance?.inject(kind, x, y, a, b) ?: false
 
-    fun screenWidth(): Int = realMetrics().widthPixels
+    /** The engine works in density-independent units so a pointer moves the same distance on any phone. */
+    fun screenWidth(): Int = (pixelWidth() / density()).toInt()
 
-    fun screenHeight(): Int = realMetrics().heightPixels
+    fun screenHeight(): Int = (pixelHeight() / density()).toInt()
+
+    fun pixelWidth(): Int = realMetrics().widthPixels
+
+    fun pixelHeight(): Int = realMetrics().heightPixels
+
+    fun density(): Float = realMetrics().density
 
     fun clipboardText(): String? {
         val clip = app.getSystemService(ClipboardManager::class.java).primaryClip ?: return null

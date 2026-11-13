@@ -99,12 +99,14 @@ class InputService : AccessibilityService() {
 
     // ---- pointer
 
-    private fun screenW() = Host.screenWidth().toDouble()
-    private fun screenH() = Host.screenHeight().toDouble()
+    private fun screenW() = Host.pixelWidth().toDouble()
+    private fun screenH() = Host.pixelHeight().toDouble()
 
+    /** [px] and [py] arrive in dp. */
     private fun moveTo(px: Double, py: Double) {
-        x = px.coerceIn(0.0, screenW() - 1)
-        y = py.coerceIn(0.0, screenH() - 1)
+        val density = Host.density()
+        x = (px * density).coerceIn(0.0, screenW() - 1)
+        y = (py * density).coerceIn(0.0, screenH() - 1)
         if (leftDown) {
             val last = trail.lastOrNull()
             if (last == null || hypot(x - last.first, y - last.second) > 12.0) trail.add(x.toFloat() to y.toFloat())

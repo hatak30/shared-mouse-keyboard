@@ -51,6 +51,12 @@ private fun ThisDevice(s: UiState) {
             style = MaterialTheme.typography.bodyMedium,
         )
         s.controlledBy?.let { Text("Controlled by $it", color = MaterialTheme.colorScheme.primary) }
+        if (s.controlledBy == null && s.peers.any { it.trusted }) {
+            Text(
+                "To control this device with a computer's mouse and keyboard, place it next to that computer in the Layout tab (or on the computer), then move the cursor over the shared edge.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (accessibility != null && !accessibility.granted) {
             Text(
                 "Other computers cannot control this device until the accessibility service is on.",

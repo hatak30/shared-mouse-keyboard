@@ -141,8 +141,14 @@ function layoutDirty() {
   return draft && draftBase && placementsKey(draft) !== placementsKey(draftBase);
 }
 
+// iOS cannot be controlled from a computer, so it never appears in the layout.
+function isIos(id) {
+  const p = state.peers.find((p) => p.node_id === id);
+  return !!p && p.os === "Ios";
+}
+
 function syncDraft() {
-  const server = state.layout.placements;
+  const server = state.layout.placements.filter((p) => !isIos(p.node_id));
   if (!draft || !layoutDirty()) {
     draft = server.map((p) => ({ ...p }));
     draftBase = server.map((p) => ({ ...p }));
@@ -184,7 +190,7 @@ function renderLayout(force = false) {
   const unplaced = $("#unplaced");
   unplaced.replaceChildren();
   const placedIds = new Set(draft.map((p) => p.node_id));
-  const free = state.peers.filter((p) => p.trusted && !placedIds.has(p.node_id));
+  const free = state.peers.filter((p) => p.trusted && p.os !== "Ios" && !placedIds.has(p.node_id));
   if (!free.length) unplaced.append(el("div", { class: "unplaced-empty" }, "All paired machines are placed."));
   for (const p of free) unplaced.append(tile(p.node_id));
 

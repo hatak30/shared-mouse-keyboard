@@ -401,3 +401,23 @@ async fn cancelling_a_download_stops_it() {
     let done = transfer_on(&b.state(), true).unwrap().done;
     assert!(done < size);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pointer_speed_scales_remote_motion() {
+    let tmp = Tmp::new();
+    let (a, _b, mut rb) = paired(&tmp, 25841, 25842).await;
+    for speed in [1.0, 3.0] {
+        let mut settings = a.state().settings.clone();
+        settings.pointer_speed = speed;
+        a.send(Command::SetSettings(settings));
+        wait_until("speed applied", || a.state().settings.pointer_speed == speed).await;
+        a.simulate_input(CapturedEvent::Motion { x: 1279.0, y: 300.0, dx: 5.0, dy: 0.0 });
+        let InputEvent::MouseMove { x: entry, .. } = next_event(&mut rb).await else { panic!("expected entry move") };
+        a.simulate_input(CapturedEvent::Motion { x: f64::NAN, y: f64::NAN, dx: 100.0, dy: 0.0 });
+        let InputEvent::MouseMove { x, .. } = next_event(&mut rb).await else { panic!("expected move") };
+        assert!(((x - entry) - 100.0 * speed).abs() < 1.5, "speed {speed}: moved {}", x - entry);
+        a.send(Command::ReturnHome);
+        wait_until("home", || a.state().controlling.is_none()).await;
+        while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(200), rb.recv()).await {}
+    }
+}

@@ -23,7 +23,12 @@ struct Root: View {
             if state.controlling != nil {
                 TouchpadView(state: state)
             } else {
-                MachinesView(state: state)
+                TabView {
+                    MachinesView(state: state)
+                        .tabItem { Label("Machines", systemImage: "desktopcomputer") }
+                    LayoutView(state: state)
+                        .tabItem { Label("Layout", systemImage: "square.grid.2x2") }
+                }
             }
         } else {
             ProgressView()

@@ -30,8 +30,21 @@ struct LogEntry: Decodable {
     var text: String
 }
 
+struct Placement: Decodable, Identifiable {
+    var nodeId: String
+    var name: String
+    var x: Int
+    var y: Int
+    var id: String { nodeId }
+}
+
+struct LayoutState: Decodable {
+    var placements: [Placement]
+}
+
 struct UiState: Decodable {
     var me: Me
+    var layout: LayoutState
     var peers: [Peer]
     var manualPeers: [String]
     var controlling: String?

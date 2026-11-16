@@ -465,3 +465,48 @@ async fn ctrl_alt_s_asks_for_a_phone_screenshot() {
     // Neither machine is a phone, so the request finds nobody and says so.
     wait_until("request noticed", || a.state().log.iter().any(|l| l.text.contains("No connected phone"))).await;
 }
+
+/// `x` connects to `y` and the two pair, `y` showing the code.
+async fn pair_machines(x: &EngineHandle, y: &EngineHandle, y_port: u16, x_name: &str, y_name: &str) {
+    x.send(Command::Connect(format!("127.0.0.1:{y_port}")));
+    wait_until("connected", || {
+        peer(&x.state(), y_name).is_some_and(|p| p.connected) && peer(&y.state(), x_name).is_some_and(|p| p.connected)
+    })
+    .await;
+    let y_id = y.state().me.node_id;
+    x.send(Command::Pair(y_id));
+    let mut code = String::new();
+    wait_until("code", || match peer(&y.state(), x_name).and_then(|p| p.pairing.clone()) {
+        Some(UiPairing::ShowCode { code: c }) => {
+            code = c;
+            true
+        }
+        _ => false,
+    })
+    .await;
+    x.send(Command::SubmitCode(y_id, code));
+    wait_until("trusted", || peer(&y.state(), x_name).is_some_and(|p| p.trusted)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn machines_paired_with_the_same_peer_find_each_other() {
+    let tmp = Tmp::new();
+    let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
+    let (hub, _r1) = engine(&tmp, 25895, screen).await;
+    let (left, _r2) = engine(&tmp, 25896, screen).await;
+    let (right, _r3) = engine(&tmp, 25897, screen).await;
+    hub.send(Command::SetName("hub".into()));
+    left.send(Command::SetName("left".into()));
+    right.send(Command::SetName("right".into()));
+    wait_until("names", || hub.state().me.name == "hub" && left.state().me.name == "left" && right.state().me.name == "right").await;
+
+    pair_machines(&left, &hub, 25895, "left", "hub").await;
+    pair_machines(&right, &hub, 25895, "right", "hub").await;
+
+    // Neither knows the other's address, but the hub does and passes it on.
+    wait_until("left and right meet", || {
+        peer(&left.state(), "right").is_some_and(|p| p.connected) && peer(&right.state(), "left").is_some_and(|p| p.connected)
+    })
+    .await;
+    assert!(!peer(&left.state(), "right").unwrap().trusted, "meeting is not trusting");
+}

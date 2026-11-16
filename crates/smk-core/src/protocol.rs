@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::layout::Layout;
 
 /// Bumped whenever the message format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Hard cap for a single frame (clipboard with files can be large).
 pub const MAX_FRAME: usize = 512 * 1024 * 1024;
 
@@ -103,6 +103,15 @@ pub struct Hello {
     pub layout: Layout,
 }
 
+/// A machine a trusted peer has paired with, so this one can find it too
+/// (needed where broadcast discovery doesn't work, e.g. on an iPhone).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownPeer {
+    pub node_id: Uuid,
+    pub name: String,
+    pub addr: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClipboardData {
     pub text: Option<String>,
@@ -154,6 +163,8 @@ pub enum Message {
     SnapshotError(String),
     /// Mouse settings shared by every paired machine; the highest version wins.
     SharedSettings { version: u64, pointer_speed: f64, edge_resistance_px: f64 },
+    /// Addresses of the machines the sender is paired with.
+    KnownPeers(Vec<KnownPeer>),
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> anyhow::Result<()> {

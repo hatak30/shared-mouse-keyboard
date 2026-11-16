@@ -24,7 +24,7 @@ use crate::layout::{Direction, Layout};
 use crate::net::{self, ConnId, NetEvent};
 use crate::paste::{self, PasteTarget};
 use crate::permissions::{self, Permission};
-use crate::protocol::{ClipboardData, Hello, InputEvent, Message, MouseButton, Os, Rect, PROTOCOL_VERSION};
+use crate::protocol::{ClipboardData, Hello, InputEvent, KnownPeer, Message, MouseButton, Os, Rect, PROTOCOL_VERSION};
 use crate::tls::{pairing_code, Identity};
 use crate::transfer::{self, FileOffer, LocalOffer};
 
@@ -655,6 +655,36 @@ impl Engine {
         })
     }
 
+    /// The machines we are paired with (except `to`), for a trusted peer to find.
+    fn known_peers(&self, to: Uuid) -> Message {
+        Message::KnownPeers(
+            self.cfg
+                .trusted
+                .iter()
+                .filter(|t| t.node_id != to && t.node_id != self.cfg.node_id)
+                .filter_map(|t| Some(KnownPeer { node_id: t.node_id, name: t.name.clone(), addr: t.last_addr.clone()? }))
+                .collect(),
+        )
+    }
+
+    fn on_known_peers(&mut self, conn: ConnId, list: Vec<KnownPeer>) {
+        if !self.peers.get(&conn).is_some_and(|p| p.trusted) {
+            return;
+        }
+        for k in list {
+            if k.node_id == self.cfg.node_id || self.peer_by_node(k.node_id).is_some() {
+                continue;
+            }
+            if self.cfg.blocked.iter().any(|b| b.node_id == k.node_id) {
+                continue;
+            }
+            // Only the smaller id dials, like for discovered machines.
+            if self.cfg.node_id < k.node_id {
+                self.dial(k.addr);
+            }
+        }
+    }
+
     fn shared_settings(&self) -> Message {
         let s = &self.cfg.settings;
         Message::SharedSettings {
@@ -756,6 +786,7 @@ impl Engine {
                 self.dirty = true;
             }
             Message::Layout(l) => self.adopt_layout(l),
+            Message::KnownPeers(list) => self.on_known_peers(conn, list),
             Message::SharedSettings { version, pointer_speed, edge_resistance_px } => {
                 let trusted = self.peers.get(&conn).is_some_and(|p| p.trusted);
                 if trusted && version > self.cfg.settings.shared_version {
@@ -862,6 +893,7 @@ impl Engine {
         let trusted = peer.trusted;
         let name = h.name.clone();
         let layout = h.layout.clone();
+        let (node_id, os) = (h.node_id, h.os);
         // A repeated Hello (e.g. after a rename) only updates details.
         let first = peer.hello.replace(h).is_none();
         if trusted {
@@ -869,8 +901,14 @@ impl Engine {
                 self.log(format!("Connected to {name}"));
             }
             self.adopt_layout(layout);
+            // An iPhone can't be sent the cursor but belongs in the layout.
+            if os == Os::Ios && self.cfg.layout.position(node_id).is_none() && self.cfg.layout.ensure(node_id, &name) {
+                self.cfg.layout.version = now_ms().max(self.cfg.layout.version + 1);
+                self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
+            }
             self.save();
             self.send_to(conn, self.shared_settings());
+            self.send_to(conn, self.known_peers(node_id));
         } else if first {
             self.log(format!("Found {name} (not paired)"));
         }
@@ -1039,6 +1077,7 @@ impl Engine {
             self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
         }
         self.send_to(conn, self.shared_settings());
+        self.send_to(conn, self.known_peers(h.node_id));
     }
 
     // ------------------------------------------------------------ layout

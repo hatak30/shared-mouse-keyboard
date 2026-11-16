@@ -318,6 +318,8 @@ struct Engine {
     peers: HashMap<ConnId, Peer>,
     discovered: HashMap<Uuid, Discovered>,
     dialing: HashSet<String>,
+    /// Addresses of machines a trusted peer told us about; retried until they connect.
+    learned: HashMap<Uuid, String>,
     control: Control,
     controlled_by: Option<ConnId>,
     shared: Arc<CaptureShared>,
@@ -446,6 +448,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         peers: HashMap::new(),
         discovered: HashMap::new(),
         dialing: HashSet::new(),
+        learned: HashMap::new(),
         control: Control::Local,
         controlled_by: None,
         shared: Arc::new(CaptureShared::default()),
@@ -678,7 +681,8 @@ impl Engine {
             if self.cfg.blocked.iter().any(|b| b.node_id == k.node_id) {
                 continue;
             }
-            // Only the smaller id dials, like for discovered machines.
+            // Only the smaller id dials (see `periodic`), like for discovered machines.
+            self.learned.insert(k.node_id, k.addr.clone());
             if self.cfg.node_id < k.node_id {
                 self.dial(k.addr);
             }
@@ -937,6 +941,11 @@ impl Engine {
                 targets.push(d.addr.to_string());
             } else if let Some(a) = &t.last_addr {
                 targets.push(a.clone());
+            }
+        }
+        for (id, addr) in &self.learned {
+            if !connected.contains(id) && self.cfg.node_id < *id {
+                targets.push(addr.clone());
             }
         }
         for m in &self.cfg.manual_peers {

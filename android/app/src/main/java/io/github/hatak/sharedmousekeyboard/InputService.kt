@@ -235,6 +235,10 @@ class InputService : AccessibilityService() {
             performGlobalAction(GLOBAL_ACTION_BACK)
             return
         }
+        if (ctrl && (code == Key.C || code == Key.X)) {
+            copySelection(cut = code == Key.X)
+            return
+        }
         val node = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable } ?: return
         if (ctrl) {
             when (code) {
@@ -256,6 +260,39 @@ class InputService : AccessibilityService() {
             Key.TAB -> insert(node, "\t")
             else -> KeyMap.charFor(code, shift)?.let { insert(node, it.toString()) }
         }
+    }
+
+    /**
+     * Android 10+ hides the clipboard from background apps, so after the
+     * computer's Ctrl+C the selected text is read from the screen and sent to
+     * the computers directly, besides being copied on the phone.
+     */
+    private fun copySelection(cut: Boolean) {
+        val root = rootInActiveWindow ?: return
+        val node = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { selectedText(it) != null }
+            ?: findSelection(root)
+        val selected = node?.let(::selectedText)
+        node?.performAction(if (cut && node.isEditable) AccessibilityNodeInfo.ACTION_CUT else AccessibilityNodeInfo.ACTION_COPY)
+        if (selected != null) Native.shareText(selected)
+    }
+
+    private fun selectedText(node: AccessibilityNodeInfo): String? {
+        val t = node.text?.takeIf { !node.isShowingHintText } ?: return null
+        val s = node.textSelectionStart
+        val e = node.textSelectionEnd
+        if (s < 0 || e <= s || e > t.length) return null
+        return t.substring(s, e)
+    }
+
+    private fun findSelection(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 600) {
+            val node = queue.removeFirst()
+            if (selectedText(node) != null) return node
+            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::add)
+        }
+        return null
     }
 
     private fun text(node: AccessibilityNodeInfo): String =

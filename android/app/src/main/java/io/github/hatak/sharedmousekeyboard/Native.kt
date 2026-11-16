@@ -15,6 +15,9 @@ object Native {
     /** kind: 0 motion(dx, dy), 1 button(index, down), 2 scroll(dx, dy), 3 key(evdev code, down). */
     @JvmStatic external fun input(kind: Int, a: Double, b: Double)
 
+    /** Puts text on the clipboard of the paired computers. */
+    @JvmStatic external fun shareText(text: String)
+
     @JvmStatic external fun clipboardChanged()
 
     /** The screenshot asked for by [Host.captureScreen]: PNG bytes, or null with an error. */

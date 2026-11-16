@@ -182,6 +182,11 @@ pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_input(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_shareText(mut env: JNIEnv, _class: JClass, text: JString) {
+    embed::share_text(jstr(&mut env, &text));
+}
+
+#[no_mangle]
 pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_clipboardChanged(_env: JNIEnv, _class: JClass) {
     android_host::notify_clipboard_changed();
 }

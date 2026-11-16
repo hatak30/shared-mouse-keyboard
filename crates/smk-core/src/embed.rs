@@ -90,6 +90,13 @@ pub fn snapshot_ready(result: Result<Vec<u8>, String>) {
     }
 }
 
+/// Share text with the paired machines' clipboards.
+pub fn share_text(text: String) {
+    if let Some(engine) = ENGINE.lock().as_ref() {
+        engine.send(Command::ShareText(text));
+    }
+}
+
 pub fn parse_command(name: &str, a: &str, b: &str) -> Result<Command, String> {
     let id = || Uuid::parse_str(a).map_err(|e| e.to_string());
     Ok(match name {

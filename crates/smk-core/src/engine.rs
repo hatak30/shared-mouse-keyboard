@@ -151,6 +151,9 @@ pub enum Command {
     SetSettings(Settings),
     SetName(String),
     ReturnHome,
+    /// Share text with paired machines as if it had been copied here (the
+    /// Android clipboard can't be read while the app is in the background).
+    ShareText(String),
     /// Start sending our input to this machine (used where there is no
     /// physical edge to push against, e.g. a phone used as a touchpad).
     ControlPeer(Uuid),
@@ -1184,6 +1187,11 @@ impl Engine {
             Command::ReturnHome => {
                 let c = self.screen.center();
                 self.return_local(c);
+            }
+            Command::ShareText(text) => {
+                if self.cfg.settings.clipboard_enabled && !text.is_empty() {
+                    self.broadcast_clipboard(ClipboardData { text: Some(text), ..Default::default() });
+                }
             }
             Command::ControlPeer(node) => {
                 if let Some(rect) = self.peer_rect(node) {

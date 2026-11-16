@@ -654,6 +654,15 @@ impl Engine {
         })
     }
 
+    fn shared_settings(&self) -> Message {
+        let s = &self.cfg.settings;
+        Message::SharedSettings {
+            version: s.shared_version,
+            pointer_speed: s.pointer_speed,
+            edge_resistance_px: s.edge_resistance_px,
+        }
+    }
+
     fn dial(&mut self, addr: String) {
         if !self.dialing.insert(addr.clone()) {
             return;
@@ -746,6 +755,16 @@ impl Engine {
                 self.dirty = true;
             }
             Message::Layout(l) => self.adopt_layout(l),
+            Message::SharedSettings { version, pointer_speed, edge_resistance_px } => {
+                let trusted = self.peers.get(&conn).is_some_and(|p| p.trusted);
+                if trusted && version > self.cfg.settings.shared_version {
+                    self.cfg.settings.shared_version = version;
+                    self.cfg.settings.pointer_speed = pointer_speed.clamp(0.1, 10.0);
+                    self.cfg.settings.edge_resistance_px = edge_resistance_px.clamp(0.0, 10_000.0);
+                    self.save();
+                    self.log("Mouse settings updated from another machine");
+                }
+            }
             Message::Enter { x, y } => {
                 // If we were controlling someone, the user is now here instead.
                 if !matches!(self.control, Control::Local) {
@@ -850,6 +869,7 @@ impl Engine {
             }
             self.adopt_layout(layout);
             self.save();
+            self.send_to(conn, self.shared_settings());
         } else if first {
             self.log(format!("Found {name} (not paired)"));
         }
@@ -1017,6 +1037,7 @@ impl Engine {
         if self.cfg.layout.version >= layout.version {
             self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
         }
+        self.send_to(conn, self.shared_settings());
     }
 
     // ------------------------------------------------------------ layout
@@ -1163,8 +1184,15 @@ impl Engine {
                 self.save();
             }
             Command::SetSettings(s) => {
+                let old = &self.cfg.settings;
+                let changed = s.pointer_speed != old.pointer_speed || s.edge_resistance_px != old.edge_resistance_px;
+                let version = if changed { now_ms().max(old.shared_version + 1) } else { old.shared_version };
                 self.cfg.settings = s;
+                self.cfg.settings.shared_version = version;
                 self.save();
+                if changed {
+                    self.broadcast_trusted(&self.shared_settings());
+                }
             }
             Command::SetName(name) => {
                 let name = name.trim().to_string();
@@ -1367,6 +1395,8 @@ impl Engine {
         }
         let started = crate::android_host::host().is_some_and(|h| h.capture_screen());
         if started {
+            let name = self.node_name(node);
+            self.log(format!("Taking a screenshot for {name}…"));
             if !self.snapshot_for.contains(&node) {
                 self.snapshot_for.push(node);
             }

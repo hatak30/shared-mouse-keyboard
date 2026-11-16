@@ -17,6 +17,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.hatak.sharedmousekeyboard
+        DEVELOPMENT_TEAM: 72X6R32NR6
+        CODE_SIGN_STYLE: Automatic
         SWIFT_OBJC_BRIDGING_HEADER: smk.h
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/build
         OTHER_LDFLAGS: -lsmk_ios

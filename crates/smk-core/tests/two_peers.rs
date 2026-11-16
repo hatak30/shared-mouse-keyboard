@@ -429,3 +429,27 @@ async fn snapshot_request_is_answered_with_an_error_on_a_machine_that_is_not_a_p
     a.send(Command::RequestSnapshot(Some(b.state().me.node_id)));
     wait_until("error reaches A", || a.state().log.iter().any(|l| l.text.contains("could not take a snapshot"))).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mouse_settings_are_shared_between_paired_machines() {
+    let tmp = Tmp::new();
+    let (a, b, _rb) = paired(&tmp, 25881, 25882).await;
+
+    let mut settings = a.state().settings.clone();
+    settings.pointer_speed = 2.5;
+    settings.edge_resistance_px = 30.0;
+    a.send(Command::SetSettings(settings));
+    wait_until("B follows A", || {
+        let s = b.state().settings;
+        s.pointer_speed == 2.5 && s.edge_resistance_px == 30.0
+    })
+    .await;
+
+    // The newest edit wins in both directions, and a UI that doesn't know the
+    // version (it never sends one) can't roll it back.
+    let mut settings = b.state().settings.clone();
+    settings.pointer_speed = 0.5;
+    settings.shared_version = 0;
+    b.send(Command::SetSettings(settings));
+    wait_until("A follows B", || a.state().settings.pointer_speed == 0.5).await;
+}

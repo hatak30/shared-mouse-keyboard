@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::layout::Layout;
 
 /// Bumped whenever the message format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// Hard cap for a single frame (clipboard with files can be large).
 pub const MAX_FRAME: usize = 512 * 1024 * 1024;
 
@@ -152,6 +152,8 @@ pub enum Message {
     /// A PNG screenshot, sent by the phone that took it.
     Snapshot(Vec<u8>),
     SnapshotError(String),
+    /// Mouse settings shared by every paired machine; the highest version wins.
+    SharedSettings { version: u64, pointer_speed: f64, edge_resistance_px: f64 },
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> anyhow::Result<()> {

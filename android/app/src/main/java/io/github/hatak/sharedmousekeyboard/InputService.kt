@@ -12,6 +12,7 @@ import android.graphics.PixelFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Display
 import android.view.Gravity
 import android.view.View
@@ -103,21 +104,32 @@ class InputService : AccessibilityService() {
 
     fun takeSnapshot(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 30) return false
-        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-            override fun onSuccess(result: ScreenshotResult) {
-                Thread {
-                    val bytes = runCatching {
-                        result.hardwareBuffer.use { buffer ->
-                            val bitmap = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("no bitmap")
-                            java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        Log.i("smk", "snapshot: asking Android for a screenshot")
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    Log.i("smk", "snapshot: got a ${result.hardwareBuffer.width}x${result.hardwareBuffer.height} buffer")
+                    Thread {
+                        val bytes = runCatching {
+                            result.hardwareBuffer.use { buffer ->
+                                val bitmap = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: error("no bitmap")
+                                java.io.ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                            }
                         }
-                    }
-                    Native.snapshot(bytes.getOrNull(), bytes.exceptionOrNull()?.message.orEmpty())
-                }.start()
-            }
+                        Log.i("smk", "snapshot: encoded ${bytes.getOrNull()?.size ?: -1} bytes ${bytes.exceptionOrNull() ?: ""}")
+                        Native.snapshot(bytes.getOrNull(), bytes.exceptionOrNull()?.message.orEmpty())
+                    }.start()
+                }
 
-            override fun onFailure(errorCode: Int) = Native.snapshot(null, "Android refused the screenshot (code $errorCode)")
-        })
+                override fun onFailure(errorCode: Int) {
+                    Log.w("smk", "snapshot: Android refused (code $errorCode)")
+                    Native.snapshot(null, "Android refused the screenshot (code $errorCode)")
+                }
+            })
+        } catch (e: Throwable) {
+            Log.e("smk", "snapshot: takeScreenshot threw", e)
+            Native.snapshot(null, "Screenshot failed: ${e.message}")
+        }
         return true
     }
 

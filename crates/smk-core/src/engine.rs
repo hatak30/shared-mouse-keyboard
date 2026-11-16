@@ -1352,6 +1352,17 @@ impl Engine {
                 self.mods.remove(&code);
             }
         }
+        // Ctrl+Alt+S: phone screenshot (a shorter chord than Ctrl+Alt+Shift+S).
+        if down
+            && code == ev::S
+            && self.cfg.settings.hotkeys_enabled
+            && self.mods.iter().any(|c| keymap::is_ctrl(*c))
+            && self.mods.iter().any(|c| keymap::is_alt(*c))
+            && !self.mods.iter().any(|c| keymap::is_shift(*c))
+        {
+            self.request_snapshot(None);
+            return;
+        }
         // Hotkeys: Ctrl+Alt+Shift + Arrow / Enter.
         if down && self.cfg.settings.hotkeys_enabled && self.hotkey_mods_held() {
             let dir = match code {

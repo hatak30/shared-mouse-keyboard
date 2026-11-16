@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use smk_core::engine::{Command, EngineHandle, StartOptions, UiPairing, UiState};
 use smk_core::input::CapturedEvent;
+use smk_core::keymap::ev;
 use smk_core::layout::{Layout, Placement};
 use smk_core::protocol::{InputEvent, Rect};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -433,7 +434,7 @@ async fn snapshot_request_is_answered_with_an_error_on_a_machine_that_is_not_a_p
 #[tokio::test(flavor = "multi_thread")]
 async fn mouse_settings_are_shared_between_paired_machines() {
     let tmp = Tmp::new();
-    let (a, b, _rb) = paired(&tmp, 25881, 25882).await;
+    let (a, b, _rb) = paired(&tmp, 25891, 25892).await;
 
     let mut settings = a.state().settings.clone();
     settings.pointer_speed = 2.5;
@@ -452,4 +453,15 @@ async fn mouse_settings_are_shared_between_paired_machines() {
     settings.shared_version = 0;
     b.send(Command::SetSettings(settings));
     wait_until("A follows B", || a.state().settings.pointer_speed == 0.5).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_alt_s_asks_for_a_phone_screenshot() {
+    let tmp = Tmp::new();
+    let (a, _b, _rb) = paired(&tmp, 25893, 25894).await;
+    for (code, down) in [(ev::LEFTCTRL, true), (ev::LEFTALT, true), (ev::S, true), (ev::S, false)] {
+        a.simulate_input(CapturedEvent::Key { code, down });
+    }
+    // Neither machine is a phone, so the request finds nobody and says so.
+    wait_until("request noticed", || a.state().log.iter().any(|l| l.text.contains("No connected phone"))).await;
 }

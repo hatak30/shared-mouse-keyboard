@@ -1,11 +1,13 @@
 package io.github.hatak.sharedmousekeyboard.ui
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -87,33 +89,8 @@ private fun PeerCard(p: Peer) {
             listOfNotNull(osLabel(p.os), p.addr).joinToString(" · "),
             style = MaterialTheme.typography.bodyMedium,
         )
-        val pairing = p.pairing
         when {
-            pairing?.kind == "show_code" -> {
-                Text("Enter this code on ${p.name}:")
-                Text(pairing.code.orEmpty(), style = MaterialTheme.typography.displaySmall)
-                TextButton(onClick = { send("cancel_pair", p.nodeId) }) { Text("Cancel") }
-            }
-            pairing?.kind == "enter_code" -> {
-                var code by remember { mutableStateOf("") }
-                Text("Type the 6-digit code shown on ${p.name}:")
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it.filter(Char::isDigit).take(6) },
-                    singleLine = true,
-                    isError = pairing.error != null,
-                    supportingText = pairing.error?.let { { Text(it) } },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                )
-                ButtonRow {
-                    Button(enabled = code.length == 6, onClick = { send("submit_code", p.nodeId, code) }) { Text("Pair") }
-                    TextButton(onClick = { send("cancel_pair", p.nodeId) }) { Text("Cancel") }
-                }
-            }
-            pairing?.kind == "declined" -> {
-                Text("${p.name} does not accept pairing requests.", color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = { send("cancel_pair", p.nodeId) }) { Text("OK") }
-            }
+            p.pairing != null -> Text("Pairing… follow the dialog", style = MaterialTheme.typography.bodySmall)
             p.trusted -> ButtonRow {
                 if (p.connected) Button(onClick = { send("control_peer", p.nodeId) }) { Text("Control") }
                 if (p.connected) OutlinedButton(onClick = { send("send_snapshot", p.nodeId) }) { Text("Send screenshot") }
@@ -153,5 +130,55 @@ private fun AddByAddress(s: UiState) {
                 TextButton(onClick = { send("remove_manual_peer", addr) }) { Text("Remove") }
             }
         }
+    }
+}
+
+/** Pairing dialog: one machine shows a code, the other types it. */
+@Composable
+fun PairingDialog(s: UiState) {
+    val peer = s.peers.firstOrNull { it.pairing != null } ?: return
+    val pairing = peer.pairing ?: return
+    var code by remember(peer.nodeId, pairing.kind) { mutableStateOf("") }
+    when (pairing.kind) {
+        "show_code" -> AlertDialog(
+            onDismissRequest = { send("cancel_pair", peer.nodeId) },
+            title = { Text("${peer.name} wants to pair") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter this code on ${peer.name}:")
+                    Text(pairing.code.orEmpty(), style = MaterialTheme.typography.displayMedium)
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { send("cancel_pair", peer.nodeId) }) { Text("Cancel") } },
+        )
+        "enter_code" -> AlertDialog(
+            onDismissRequest = { send("cancel_pair", peer.nodeId) },
+            title = { Text("Pair with ${peer.name}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Type the 6-digit code shown on ${peer.name}.")
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                        singleLine = true,
+                        isError = pairing.error != null,
+                        supportingText = pairing.error?.let { { Text(it) } },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        textStyle = MaterialTheme.typography.headlineMedium,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(enabled = code.length == 6, onClick = { send("submit_code", peer.nodeId, code) }) { Text("Pair") }
+            },
+            dismissButton = { TextButton(onClick = { send("cancel_pair", peer.nodeId) }) { Text("Cancel") } },
+        )
+        else -> AlertDialog(
+            onDismissRequest = { send("cancel_pair", peer.nodeId) },
+            title = { Text("Pairing declined") },
+            text = { Text("${peer.name} does not accept pairing requests.") },
+            confirmButton = { TextButton(onClick = { send("cancel_pair", peer.nodeId) }) { Text("OK") } },
+        )
     }
 }

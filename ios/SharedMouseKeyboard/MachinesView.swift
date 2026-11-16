@@ -59,8 +59,6 @@ struct MachinesView: View {
 struct PeerRow: View {
     @EnvironmentObject var model: Model
     let peer: Peer
-    @State private var code = ""
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -73,27 +71,8 @@ struct PeerRow: View {
             Text([osLabel(peer.os), peer.addr].compactMap { $0 }.joined(separator: " · "))
                 .font(.subheadline).foregroundStyle(.secondary)
 
-            if let pairing = peer.pairing {
-                switch pairing.kind {
-                case "show_code":
-                    Text("Enter this code on \(peer.name):")
-                    Text(pairing.code ?? "").font(.system(size: 34, weight: .semibold, design: .monospaced))
-                    Button("Cancel") { model.send("cancel_pair", peer.nodeId) }.buttonStyle(.borderless)
-                case "enter_code":
-                    Text("Type the 6-digit code shown on \(peer.name):")
-                    TextField("123456", text: $code)
-                        .keyboardType(.numberPad)
-                        .onChange(of: code) { code = String($0.filter(\.isNumber).prefix(6)) }
-                    if let error = pairing.error { Text(error).foregroundStyle(.red).font(.footnote) }
-                    HStack {
-                        Button("Pair") { model.send("submit_code", peer.nodeId, code) }
-                            .buttonStyle(.borderedProminent).disabled(code.count != 6)
-                        Button("Cancel") { model.send("cancel_pair", peer.nodeId) }.buttonStyle(.borderless)
-                    }
-                default:
-                    Text("\(peer.name) does not accept pairing requests.").foregroundStyle(.red)
-                    Button("OK") { model.send("cancel_pair", peer.nodeId) }.buttonStyle(.borderless)
-                }
+            if peer.pairing != nil {
+                Text("Pairing… follow the dialog").font(.footnote).foregroundStyle(.secondary)
             } else if peer.trusted {
                 HStack {
                     if peer.connected {
@@ -109,5 +88,60 @@ struct PeerRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// Pairing dialog: the machine that was asked shows a code, the other types it.
+struct PairingSheet: View {
+    @EnvironmentObject var model: Model
+    let peer: Peer
+    @State private var code = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                if let pairing = peer.pairing {
+                    switch pairing.kind {
+                    case "show_code":
+                        Text("\(peer.name) wants to pair").font(.headline)
+                        Text("Enter this code on \(peer.name):").foregroundStyle(.secondary)
+                        Text(pairing.code ?? "")
+                            .font(.system(size: 56, weight: .bold, design: .monospaced))
+                            .padding(.vertical, 8)
+                    case "enter_code":
+                        Text("Pair with \(peer.name)").font(.headline)
+                        Text("Type the 6-digit code shown on \(peer.name).").foregroundStyle(.secondary)
+                        TextField("000000", text: $code)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 40, weight: .bold, design: .monospaced))
+                            .multilineTextAlignment(.center)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($focused)
+                            .onChange(of: code) { code = String($0.filter(\.isNumber).prefix(6)) }
+                        if let error = pairing.error {
+                            Text(error).foregroundStyle(.red).font(.footnote)
+                        }
+                        Button("Pair") { model.send("submit_code", peer.nodeId, code) }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .disabled(code.count != 6)
+                    default:
+                        Text("\(peer.name) does not accept pairing requests.").foregroundStyle(.red)
+                    }
+                }
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Pairing")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { model.send("cancel_pair", peer.nodeId) }
+                }
+            }
+            .onAppear { focused = true }
+        }
+        .interactiveDismissDisabled()
     }
 }

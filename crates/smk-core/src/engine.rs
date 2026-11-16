@@ -1086,7 +1086,17 @@ impl Engine {
             self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
         }
         self.send_to(conn, self.shared_settings());
-        self.send_to(conn, self.known_peers(h.node_id));
+        // Everyone we trust learns about the new machine, not just the new machine.
+        self.send_known_peers();
+    }
+
+    /// Tell every trusted, connected peer which machines we are paired with.
+    fn send_known_peers(&self) {
+        for p in self.peers.values().filter(|p| p.trusted) {
+            if let Some(id) = p.node_id() {
+                p.send(self.known_peers(id));
+            }
+        }
     }
 
     // ------------------------------------------------------------ layout

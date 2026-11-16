@@ -33,6 +33,7 @@ fun MainScreen(s: UiState) {
             }
         },
     ) { padding ->
+        PairingDialog(s)
         Box(Modifier.padding(padding)) {
             when (tab) {
                 0 -> MachinesTab(s)

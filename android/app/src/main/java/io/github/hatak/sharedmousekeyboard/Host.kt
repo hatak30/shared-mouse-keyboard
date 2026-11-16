@@ -40,8 +40,23 @@ object Host {
         if (name == null || name == "localhost" || name.isBlank()) Store.command("set_name", Build.MODEL)
     }
 
+    /** Clips set before this moment were already seen (or were put there by us). */
+    @Volatile private var lastClipStamp = System.currentTimeMillis()
+
+    /**
+     * Share the clipboard with the computers if it changed since last time.
+     * Android only lets a focused app read it, so call this while one of our
+     * windows has focus. Sharing an unchanged clip would overwrite whatever
+     * the computers copied in the meantime.
+     */
     fun clipboardChangedLocally() {
-        if (started) Native.clipboardChanged()
+        if (!started) return
+        val clip = runCatching { app.getSystemService(ClipboardManager::class.java).primaryClip }.getOrNull() ?: return
+        val stamp = clip.description.timestamp
+        if (clip.itemCount == 0 || stamp <= lastClipStamp) return
+        lastClipStamp = stamp
+        val text = clip.getItemAt(0).coerceToText(app)?.toString().orEmpty()
+        if (text.isNotEmpty()) Native.shareText(text)
     }
 
     // ---- called by the engine
@@ -70,6 +85,7 @@ object Host {
 
     fun setClipboardText(text: String) {
         app.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("smk", text))
+        lastClipStamp = System.currentTimeMillis() + 1000
     }
 
     fun permissionGranted(id: String): Boolean = when (id) {

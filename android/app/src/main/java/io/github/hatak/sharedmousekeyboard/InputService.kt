@@ -61,7 +61,13 @@ class InputService : AccessibilityService() {
         instance = this
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         scope.launch {
-            Store.state.map { it?.controlledBy != null }.collect { setCursorVisible(it) }
+            var wasControlled = false
+            Store.state.map { it?.controlledBy != null }.collect { controlled ->
+                setCursorVisible(controlled)
+                // The computer just left: pass on whatever was copied here meanwhile.
+                if (wasControlled && !controlled) grabClipboard()
+                wasControlled = controlled
+            }
         }
         Store.command("refresh_permissions", "", "")
     }
@@ -231,8 +237,10 @@ class InputService : AccessibilityService() {
     private fun key(code: Int, down: Boolean) {
         if (Key.isModifier(code)) {
             if (down) {
+                // Meta alone means Home, but not as part of a chord: a Mac's
+                // Control arrives as Meta when Command and Ctrl are swapped.
+                if (Key.isMeta(code)) metaUsed = modifiers.any { !Key.isMeta(it) } else metaUsed = true
                 modifiers.add(code)
-                if (Key.isMeta(code)) metaUsed = false
             } else {
                 modifiers.remove(code)
                 if (Key.isMeta(code) && !metaUsed) performGlobalAction(GLOBAL_ACTION_HOME)
@@ -285,7 +293,33 @@ class InputService : AccessibilityService() {
             ?: findSelection(root)
         val selected = node?.let(::selectedText)
         node?.performAction(if (cut && node.isEditable) AccessibilityNodeInfo.ACTION_CUT else AccessibilityNodeInfo.ACTION_COPY)
-        if (selected != null) Native.shareText(selected)
+        if (selected != null) Native.shareText(selected) else main.postDelayed(::grabClipboard, 250)
+    }
+
+    /**
+     * Android 10+ only shows the clipboard to an app with a focused window.
+     * Take focus with an invisible window for a moment, read it, and let go.
+     */
+    private fun grabClipboard() {
+        var done = false
+        val view = object : View(this) {
+            override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+                super.onWindowFocusChanged(hasWindowFocus)
+                if (hasWindowFocus && !done) {
+                    done = true
+                    Host.clipboardChangedLocally()
+                    main.post { if (isAttachedToWindow) windowManager.removeView(this) }
+                }
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            1, 1,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        runCatching { windowManager.addView(view, params) }
+        main.postDelayed({ if (view.isAttachedToWindow) windowManager.removeView(view) }, 800)
     }
 
     private fun selectedText(node: AccessibilityNodeInfo): String? {

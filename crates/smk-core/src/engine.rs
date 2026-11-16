@@ -352,6 +352,8 @@ struct Engine {
     transfers: Vec<Xfer>,
     /// Machines waiting for the screenshot being captured.
     snapshot_for: Vec<Uuid>,
+    /// The screenshot hotkey is down (ignore its repeats).
+    snapshot_key_held: bool,
     clip_ignore_until: Instant,
     clip_last_hash: Option<[u8; 32]>,
     clip_pending: Option<Instant>,
@@ -474,6 +476,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         remote_paste_v: false,
         transfers: Vec::new(),
         snapshot_for: Vec::new(),
+        snapshot_key_held: false,
         clip_ignore_until: Instant::now(),
         clip_last_hash: None,
         clip_pending: None,
@@ -1407,6 +1410,9 @@ impl Engine {
                 self.mods.remove(&code);
             }
         }
+        if code == ev::S && !down {
+            self.snapshot_key_held = false;
+        }
         // Ctrl+Alt+S: phone screenshot (a shorter chord than Ctrl+Alt+Shift+S).
         if down
             && code == ev::S
@@ -1415,7 +1421,7 @@ impl Engine {
             && self.mods.iter().any(|c| keymap::is_alt(*c))
             && !self.mods.iter().any(|c| keymap::is_shift(*c))
         {
-            self.request_snapshot(None);
+            self.snapshot_hotkey();
             return;
         }
         // Hotkeys: Ctrl+Alt+Shift + Arrow / Enter.
@@ -1432,7 +1438,7 @@ impl Engine {
                 return;
             }
             if code == ev::S {
-                self.request_snapshot(None);
+                self.snapshot_hotkey();
                 return;
             }
             if code == ev::ENTER || code == ev::KPENTER {
@@ -1507,6 +1513,14 @@ impl Engine {
         });
         self.write_clipboard(ClipboardData { image_png: Some(png), ..Default::default() });
         self.log(format!("Snapshot from {name} saved to {path} and copied to the clipboard"));
+    }
+
+    /// One request per press: a held key repeats, and a phone refuses
+    /// screenshots that come faster than one a second.
+    fn snapshot_hotkey(&mut self) {
+        if !std::mem::replace(&mut self.snapshot_key_held, true) {
+            self.request_snapshot(None);
+        }
     }
 
     fn hotkey_mods_held(&self) -> bool {

@@ -39,6 +39,26 @@ struct UiState: Decodable {
     var log: [LogEntry]
 }
 
+/// IPv4 addresses of this device, so it can be added by address on a computer.
+func localAddresses() -> [String] {
+    var result: [String] = []
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0, let first = list else { return result }
+    defer { freeifaddrs(list) }
+    for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let ifa = ptr.pointee
+        guard let addr = ifa.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+        let name = String(cString: ifa.ifa_name)
+        guard name.hasPrefix("en") else { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+            let ip = String(cString: host)
+            if !ip.hasPrefix("169.254.") { result.append(ip) }
+        }
+    }
+    return result
+}
+
 func osLabel(_ os: String?) -> String {
     switch os {
     case "MacOs": return "macOS"

@@ -11,7 +11,9 @@ struct MachinesView: View {
                 Section("This device") {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(state.me.name).font(.headline)
-                        Text("\(osLabel(state.me.os)) · port \(state.me.port)").font(.subheadline).foregroundStyle(.secondary)
+                        Text("\(osLabel(state.me.os)) · port \(String(state.me.port))").font(.subheadline).foregroundStyle(.secondary)
+                        Text("Address: " + (localAddresses().joined(separator: ", ").isEmpty ? "not on Wi-Fi" : localAddresses().joined(separator: ", ")))
+                            .font(.footnote).foregroundStyle(.secondary)
                         Text("iOS cannot be controlled by other computers. Use this phone as a touchpad and keyboard for the machines below.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }

@@ -18,7 +18,9 @@ struct JniHost {
 impl JniHost {
     fn call<R>(&self, f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<R>) -> Option<R> {
         let mut env = self.vm.attach_current_thread_permanently().ok()?;
-        let result = f(&mut env, self.obj.as_obj());
+        // Engine threads stay attached for good, so nothing ever pops their
+        // local references: give every call its own frame.
+        let result = env.with_local_frame(16, |env| f(env, self.obj.as_obj()));
         if env.exception_check().unwrap_or(false) {
             let _ = env.exception_clear();
             return None;

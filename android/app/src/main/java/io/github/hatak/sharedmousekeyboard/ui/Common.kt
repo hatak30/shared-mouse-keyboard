@@ -21,6 +21,7 @@ fun osLabel(os: String?) = when (os) {
     "Windows" -> "Windows"
     "Linux" -> "Linux"
     "Android" -> "Android"
+    "Ios" -> "iOS"
     else -> "Unknown system"
 }
 

@@ -54,9 +54,13 @@ fun LayoutTab(s: UiState) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (x in minX..maxX) {
                         val here = draft.firstOrNull { it.x == x && it.y == y }
+                        val isMe = here?.nodeId == s.me.nodeId
                         Cell(
                             placement = here,
-                            isMe = here?.nodeId == s.me.nodeId,
+                            isMe = isMe,
+                            isController = here != null &&
+                                ((isMe && s.controlling != null) || (!isMe && s.controlledBy == here.name)),
+                            isTarget = here != null && !isMe && s.controlling == here.name,
                             isSelected = here != null && here.nodeId == selected,
                             onClick = {
                                 if (here != null) {
@@ -82,7 +86,14 @@ fun LayoutTab(s: UiState) {
 }
 
 @Composable
-private fun Cell(placement: Placement?, isMe: Boolean, isSelected: Boolean, onClick: () -> Unit) {
+private fun Cell(
+    placement: Placement?,
+    isMe: Boolean,
+    isController: Boolean,
+    isTarget: Boolean,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     Surface(
         modifier = Modifier.size(width = 104.dp, height = 72.dp).clickable(onClick = onClick),
@@ -90,15 +101,27 @@ private fun Cell(placement: Placement?, isMe: Boolean, isSelected: Boolean, onCl
         color = when {
             placement == null -> colors.surface
             isSelected -> colors.primaryContainer
+            isController -> colors.tertiaryContainer
             isMe -> colors.secondaryContainer
             else -> colors.surfaceVariant
         },
-        border = BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) colors.primary else colors.outlineVariant),
+        border = BorderStroke(
+            if (isSelected || isController || isTarget) 3.dp else 1.dp,
+            when {
+                isController -> colors.tertiary
+                isSelected || isTarget -> colors.primary
+                else -> colors.outlineVariant
+            },
+        ),
     ) {
         if (placement != null) {
             Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(placement.name, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, style = MaterialTheme.typography.labelLarge)
-                if (isMe) Text("this device", style = MaterialTheme.typography.labelSmall)
+                when {
+                    isController -> Text(if (isMe) "controlling now" else "controlling", style = MaterialTheme.typography.labelSmall)
+                    isTarget -> Text("being controlled", style = MaterialTheme.typography.labelSmall)
+                    isMe -> Text("this device", style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
     }

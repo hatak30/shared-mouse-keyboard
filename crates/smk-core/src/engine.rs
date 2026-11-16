@@ -363,7 +363,8 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
-/// iOS offers no way to inject input, so it never takes part in the layout.
+/// iOS offers no way to inject input: it is shown in the layout, but the
+/// cursor can never be sent to it.
 fn controllable(os: Os) -> bool {
     os != Os::Ios
 }
@@ -1027,7 +1028,7 @@ impl Engine {
             last_addr: Some(addr),
         });
         // Place the new machine in the layout and share it.
-        if controllable(h.os) && self.cfg.layout.ensure(h.node_id, &h.name) {
+        if self.cfg.layout.ensure(h.node_id, &h.name) {
             self.cfg.layout.version = now_ms();
         }
         let layout = self.cfg.layout.clone();
@@ -1046,9 +1047,7 @@ impl Engine {
         if l.version > self.cfg.layout.version && l.validate().is_ok() {
             self.cfg.layout = l;
             let (id, name) = (self.cfg.node_id, self.cfg.name.clone());
-            if controllable(Os::current()) {
-                self.cfg.layout.ensure(id, &name);
-            }
+            self.cfg.layout.ensure(id, &name);
             self.save();
             self.log("Layout updated from another machine");
         } else if l.version < self.cfg.layout.version {
@@ -1068,9 +1067,7 @@ impl Engine {
                 l.version = now_ms().max(self.cfg.layout.version + 1);
                 self.cfg.layout = l;
                 let (id, name) = (self.cfg.node_id, self.cfg.name.clone());
-                if controllable(Os::current()) {
-                    self.cfg.layout.ensure(id, &name);
-                }
+                self.cfg.layout.ensure(id, &name);
                 self.save();
                 self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
                 self.log("Layout saved and shared");

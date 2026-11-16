@@ -127,6 +127,8 @@ form.row input { flex: 1; max-width: 360px; }
 .tile.offline { opacity: .55; border-style: dashed; }
 .tile.dragging { cursor: grabbing; z-index: 10; box-shadow: 0 10px 24px rgba(0,0,0,.2); transition: none; }
 .tile.active-target { box-shadow: 0 0 0 3px var(--accent); }
+.tile.controller { border-color: #f59e0b; background: #fff7e6; box-shadow: 0 0 0 4px rgba(245,158,11,.35); }
+.tile.controller .tag { color: #b45309; }
 .tile .name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile .meta { font-size: 11px; color: var(--muted); }
 .tile .tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }

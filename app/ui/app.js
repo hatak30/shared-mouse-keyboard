@@ -141,14 +141,8 @@ function layoutDirty() {
   return draft && draftBase && placementsKey(draft) !== placementsKey(draftBase);
 }
 
-// iOS cannot be controlled from a computer, so it never appears in the layout.
-function isIos(id) {
-  const p = state.peers.find((p) => p.node_id === id);
-  return !!p && p.os === "Ios";
-}
-
 function syncDraft() {
-  const server = state.layout.placements.filter((p) => !isIos(p.node_id));
+  const server = state.layout.placements;
   if (!draft || !layoutDirty()) {
     draft = server.map((p) => ({ ...p }));
     draftBase = server.map((p) => ({ ...p }));
@@ -158,7 +152,7 @@ function syncDraft() {
 function renderLayout(force = false) {
   if (dragging) return;
   syncDraft();
-  const sig = [draft, state.peers.map((p) => [p.node_id, p.name, p.connected, p.trusted, p.os, p.screen]), state.me.name, state.controlling, state.me.screen];
+  const sig = [draft, state.peers.map((p) => [p.node_id, p.name, p.connected, p.trusted, p.os, p.screen]), state.me.name, state.controlling, state.controlled_by, state.me.screen];
   if (sameSig("layout", sig) && !force) return;
 
   const xs = draft.map((p) => p.x), ys = draft.map((p) => p.y);
@@ -190,7 +184,7 @@ function renderLayout(force = false) {
   const unplaced = $("#unplaced");
   unplaced.replaceChildren();
   const placedIds = new Set(draft.map((p) => p.node_id));
-  const free = state.peers.filter((p) => p.trusted && p.os !== "Ios" && !placedIds.has(p.node_id));
+  const free = state.peers.filter((p) => p.trusted && !placedIds.has(p.node_id));
   if (!free.length) unplaced.append(el("div", { class: "unplaced-empty" }, "All paired machines are placed."));
   for (const p of free) unplaced.append(tile(p.node_id));
 
@@ -203,8 +197,13 @@ function renderLayout(force = false) {
 function tile(id) {
   const n = nodeInfo(id);
   const isTarget = state.controlling && n.name === state.controlling;
-  const cls = ["tile", n.me ? "me" : "", !n.me && !n.connected ? "offline" : "", isTarget ? "active-target" : ""].join(" ");
+  // The machine whose mouse and keyboard are in use right now.
+  const isController = (n.me && !!state.controlling) || (!n.me && !!state.controlled_by && n.name === state.controlled_by);
+  const cls = ["tile", n.me ? "me" : "", !n.me && !n.connected ? "offline" : "", isTarget ? "active-target" : "", isController ? "controller" : ""].join(" ");
   let tag = n.me ? "This machine" : n.foreign ? "Not paired here" : n.connected ? "Online" : "Offline";
+  if (isController) tag = n.me ? "Controlling now" : "Controlling this machine";
+  else if (isTarget) tag = "Being controlled";
+  else if (n.me && state.controlled_by) tag = "Being controlled";
   const t = el("div", { class: cls, "data-id": id, title: n.name },
     el("div", {},
       el("div", { class: "tag" }, tag),

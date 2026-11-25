@@ -29,23 +29,32 @@ static PARK_X: AtomicU64 = AtomicU64::new(0);
 static PARK_Y: AtomicU64 = AtomicU64::new(0);
 
 extern "C" {
-    fn CGSMainConnectionID() -> i32;
-    fn CGSSetConnectionProperty(
-        cid: i32,
-        target: i32,
-        key: core_foundation::string::CFStringRef,
-        value: core_foundation::base::CFTypeRef,
-    ) -> i32;
+    fn dlsym(handle: *mut c_void, symbol: *const std::os::raw::c_char) -> *mut c_void;
 }
 
+const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+
+/// Lets a background app hide the cursor. Private API, looked up at runtime so a
+/// macOS release without it just keeps the visible, parked cursor.
 fn allow_background_cursor_hiding() {
+    use core_foundation::base::CFTypeRef;
     use core_foundation::boolean::CFBoolean;
-    use core_foundation::string::CFString;
-    unsafe {
-        let cid = CGSMainConnectionID();
+    use core_foundation::string::{CFString, CFStringRef};
+    type MainConn = unsafe extern "C" fn() -> i32;
+    type SetProp = unsafe extern "C" fn(i32, i32, CFStringRef, CFTypeRef) -> i32;
+    static TRIED: std::sync::Once = std::sync::Once::new();
+    TRIED.call_once(|| unsafe {
+        let main = dlsym(RTLD_DEFAULT, c"CGSMainConnectionID".as_ptr());
+        let set = dlsym(RTLD_DEFAULT, c"CGSSetConnectionProperty".as_ptr());
+        if main.is_null() || set.is_null() {
+            return;
+        }
+        let main: MainConn = std::mem::transmute(main);
+        let set: SetProp = std::mem::transmute(set);
+        let cid = main();
         let key = CFString::new("SetsCursorInBackground");
-        CGSSetConnectionProperty(cid, cid, key.as_concrete_TypeRef(), CFBoolean::true_value().as_CFTypeRef());
-    }
+        let _ = set(cid, cid, key.as_concrete_TypeRef(), CFBoolean::true_value().as_CFTypeRef());
+    });
 }
 
 fn park_cursor() {

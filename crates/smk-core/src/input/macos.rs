@@ -327,6 +327,9 @@ impl Injector {
         let Some(src) = Self::source() else { return };
         match event {
             InputEvent::MouseMove { x, y } => {
+                // Tools like the Cmd+Shift+5 selection read the delta and
+                // pressure fields of drag events, not just the position.
+                let (dx, dy) = (x - self.pos.0, y - self.pos.1);
                 self.pos = (x, y);
                 let (ty, btn) = if self.buttons[0] {
                     (CGEventType::LeftMouseDragged, CGMouseButton::Left)
@@ -338,6 +341,11 @@ impl Injector {
                     (CGEventType::MouseMoved, CGMouseButton::Left)
                 };
                 if let Ok(ev) = CGEvent::new_mouse_event(src, ty, CGPoint::new(x, y), btn) {
+                    ev.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx.round() as i64);
+                    ev.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy.round() as i64);
+                    if !matches!(ty, CGEventType::MouseMoved) {
+                        ev.set_double_value_field(EventField::MOUSE_EVENT_PRESSURE, 1.0);
+                    }
                     ev.set_flags(self.cg_flags());
                     self.post(ev);
                 }

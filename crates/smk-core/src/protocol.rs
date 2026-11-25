@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::layout::Layout;
 
 /// Bumped whenever the message format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Hard cap for a single frame (clipboard with files can be large).
 pub const MAX_FRAME: usize = 512 * 1024 * 1024;
 
@@ -19,6 +19,8 @@ pub enum Os {
     Windows,
     Linux,
     Other,
+    Android,
+    Ios,
 }
 
 impl Os {
@@ -29,6 +31,10 @@ impl Os {
             Os::Windows
         } else if cfg!(target_os = "linux") {
             Os::Linux
+        } else if cfg!(target_os = "android") {
+            Os::Android
+        } else if cfg!(target_os = "ios") {
+            Os::Ios
         } else {
             Os::Other
         }
@@ -97,6 +103,15 @@ pub struct Hello {
     pub layout: Layout,
 }
 
+/// A machine a trusted peer has paired with, so this one can find it too
+/// (needed where broadcast discovery doesn't work, e.g. on an iPhone).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownPeer {
+    pub node_id: Uuid,
+    pub name: String,
+    pub addr: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClipboardData {
     pub text: Option<String>,
@@ -141,6 +156,17 @@ pub enum Message {
     FileData { index: u32, data: Vec<u8> },
     FilesDone,
     FilesError(String),
+    /// Ask a phone to send a screenshot of its screen.
+    SnapshotRequest,
+    /// A PNG screenshot, sent by the phone that took it.
+    Snapshot(Vec<u8>),
+    SnapshotError(String),
+    /// Mouse settings shared by every paired machine; the highest version wins.
+    SharedSettings { version: u64, pointer_speed: f64, edge_resistance_px: f64 },
+    /// Addresses of the machines the sender is paired with.
+    KnownPeers(Vec<KnownPeer>),
+    /// Ask a phone to start screen recording, or to stop it and offer the video.
+    RecordToggle,
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> anyhow::Result<()> {

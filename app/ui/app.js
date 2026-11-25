@@ -21,8 +21,8 @@ const el = (tag, attrs = {}, ...children) => {
   return e;
 };
 
-const OS_LABEL = { MacOs: "macOS", Windows: "Windows", Linux: "Linux", Other: "Other" };
-const OS_ICON = { MacOs: "🍎", Windows: "🪟", Linux: "🐧", Other: "🖥️" };
+const OS_LABEL = { MacOs: "macOS", Windows: "Windows", Linux: "Linux", Android: "Android", Ios: "iOS", Other: "Other" };
+const OS_ICON = { MacOs: "🍎", Windows: "🪟", Linux: "🐧", Android: "🤖", Ios: "📱", Other: "🖥️" };
 
 let state = null;
 const sigs = {}; // last render signature per section
@@ -152,7 +152,7 @@ function syncDraft() {
 function renderLayout(force = false) {
   if (dragging) return;
   syncDraft();
-  const sig = [draft, state.peers.map((p) => [p.node_id, p.name, p.connected, p.trusted, p.os, p.screen]), state.me.name, state.controlling, state.me.screen];
+  const sig = [draft, state.peers.map((p) => [p.node_id, p.name, p.connected, p.trusted, p.os, p.screen]), state.me.name, state.controlling, state.controlled_by, state.me.screen];
   if (sameSig("layout", sig) && !force) return;
 
   const xs = draft.map((p) => p.x), ys = draft.map((p) => p.y);
@@ -197,8 +197,13 @@ function renderLayout(force = false) {
 function tile(id) {
   const n = nodeInfo(id);
   const isTarget = state.controlling && n.name === state.controlling;
-  const cls = ["tile", n.me ? "me" : "", !n.me && !n.connected ? "offline" : "", isTarget ? "active-target" : ""].join(" ");
+  // The machine whose mouse and keyboard are in use right now.
+  const isController = (n.me && !!state.controlling) || (!n.me && !!state.controlled_by && n.name === state.controlled_by);
+  const cls = ["tile", n.me ? "me" : "", !n.me && !n.connected ? "offline" : "", isTarget ? "active-target" : "", isController ? "controller" : ""].join(" ");
   let tag = n.me ? "This machine" : n.foreign ? "Not paired here" : n.connected ? "Online" : "Offline";
+  if (isController) tag = n.me ? "Controlling now" : "Controlling this machine";
+  else if (isTarget) tag = "Being controlled";
+  else if (n.me && state.controlled_by) tag = "Being controlled";
   const t = el("div", { class: cls, "data-id": id, title: n.name },
     el("div", {},
       el("div", { class: "tag" }, tag),
@@ -395,6 +400,13 @@ function machineCard(p) {
       title: "Hide this machine and decline its pairing requests",
       onclick: () => confirmInline(buttons, `Block ${p.name}?`, () => call("block", { nodeId: p.node_id })),
     }, "Block"));
+  }
+  if (p.trusted && p.connected && p.os === "Android") {
+    buttons.append(el("button", {
+      class: "btn",
+      title: "Take a screenshot of the phone; it is copied to the clipboard and saved to Downloads",
+      onclick: () => call("request_snapshot", { nodeId: p.node_id }),
+    }, "Snapshot"));
   }
   if (p.trusted) {
     buttons.append(el("button", {

@@ -2,7 +2,7 @@
 //! Requires the Accessibility and Input Monitoring permissions.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,34 @@ extern "C" {
 }
 
 static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static PARK_X: AtomicU64 = AtomicU64::new(0);
+static PARK_Y: AtomicU64 = AtomicU64::new(0);
+
+extern "C" {
+    fn CGSMainConnectionID() -> i32;
+    fn CGSSetConnectionProperty(
+        cid: i32,
+        target: i32,
+        key: core_foundation::string::CFStringRef,
+        value: core_foundation::base::CFTypeRef,
+    ) -> i32;
+}
+
+fn allow_background_cursor_hiding() {
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::string::CFString;
+    unsafe {
+        let cid = CGSMainConnectionID();
+        let key = CFString::new("SetsCursorInBackground");
+        CGSSetConnectionProperty(cid, cid, key.as_concrete_TypeRef(), CFBoolean::true_value().as_CFTypeRef());
+    }
+}
+
+fn park_cursor() {
+    let x = f64::from_bits(PARK_X.load(Ordering::SeqCst));
+    let y = f64::from_bits(PARK_Y.load(Ordering::SeqCst));
+    let _ = CGDisplay::warp_mouse_cursor_position(CGPoint::new(x, y));
+}
 
 // Device-dependent modifier bits (IOLLEvent.h) to tell left from right.
 const NX_DEVICELCTLKEYMASK: u64 = 0x0000_0001;
@@ -134,6 +162,9 @@ fn handle_event(
             let dx = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_X) as f64;
             let dy = event.get_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y) as f64;
             let _ = tx.send(CapturedEvent::Motion { x: p.x, y: p.y, dx, dy });
+            if grabbing {
+                park_cursor();
+            }
             verdict(grabbing)
         }
         LeftMouseDown | LeftMouseUp | RightMouseDown | RightMouseUp | OtherMouseDown
@@ -202,6 +233,17 @@ fn handle_event(
 }
 
 pub fn set_grab(shared: &CaptureShared, grab: bool) {
+    if grab {
+        if let Some(p) = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .ok()
+            .and_then(|src| CGEvent::new(src).ok())
+            .map(|e| e.location())
+        {
+            PARK_X.store(p.x.to_bits(), Ordering::SeqCst);
+            PARK_Y.store(p.y.to_bits(), Ordering::SeqCst);
+        }
+        allow_background_cursor_hiding();
+    }
     shared.set_grabbing(grab);
     // Freezing the cursor keeps delta events flowing while it stays put.
     let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(!grab);
@@ -327,6 +369,7 @@ impl Injector {
         let Some(src) = Self::source() else { return };
         match event {
             InputEvent::MouseMove { x, y } => {
+                let (dx, dy) = (x - self.pos.0, y - self.pos.1);
                 self.pos = (x, y);
                 let (ty, btn) = if self.buttons[0] {
                     (CGEventType::LeftMouseDragged, CGMouseButton::Left)
@@ -338,6 +381,11 @@ impl Injector {
                     (CGEventType::MouseMoved, CGMouseButton::Left)
                 };
                 if let Ok(ev) = CGEvent::new_mouse_event(src, ty, CGPoint::new(x, y), btn) {
+                    ev.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx.round() as i64);
+                    ev.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy.round() as i64);
+                    if !matches!(ty, CGEventType::MouseMoved) {
+                        ev.set_double_value_field(EventField::MOUSE_EVENT_PRESSURE, 1.0);
+                    }
                     ev.set_flags(self.cg_flags());
                     self.post(ev);
                 }

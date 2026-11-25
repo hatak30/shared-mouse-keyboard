@@ -3,9 +3,11 @@
 //! Platform-independent pieces (layout, protocol, TLS, discovery, engine) plus
 //! per-OS input capture/injection backends in [`input`].
 
+pub mod android_host;
 pub mod clipboard;
 pub mod config;
 pub mod discovery;
+pub mod embed;
 pub mod engine;
 pub mod input;
 pub mod keymap;

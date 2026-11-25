@@ -1,0 +1,24 @@
+[package]
+name = "smk-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JNI bridge that runs the Shared Mouse & Keyboard engine inside the Android app"
+
+[lib]
+name = "smk_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+smk-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+parking_lot = "0.12"
+jni = "0.21"
+uuid = { version = "1", features = ["serde"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+tracing-android = "0.2"

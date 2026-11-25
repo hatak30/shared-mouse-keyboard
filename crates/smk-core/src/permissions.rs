@@ -340,7 +340,65 @@ mod imp {
     pub fn open_settings(_id: &str) {}
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "android")]
+mod imp {
+    use super::Permission;
+    use crate::android_host;
+
+    fn granted(id: &str) -> bool {
+        android_host::host().is_some_and(|h| h.permission_granted(id))
+    }
+
+    pub fn check() -> Vec<Permission> {
+        vec![
+            Permission {
+                id: "accessibility",
+                name: "Accessibility service",
+                granted: granted("accessibility"),
+                help: "Lets other computers tap, scroll and type on this device. Open Settings → Accessibility → \
+                       Installed apps → Shared Mouse & Keyboard and turn it on."
+                    .into(),
+                actionable: true,
+                optional: false,
+                action: Some("Open settings"),
+                ok_label: Some("On"),
+            },
+            Permission {
+                id: "notifications",
+                name: "Notifications",
+                granted: granted("notifications"),
+                help: "Needed on Android 13+ to show that sharing is running in the background.".into(),
+                actionable: true,
+                optional: true,
+                action: Some("Open settings"),
+                ok_label: None,
+            },
+            Permission {
+                id: "battery",
+                name: "Unrestricted battery use",
+                granted: granted("battery"),
+                help: "Keeps the connection alive while the screen is off. Choose \"Unrestricted\" for this app."
+                    .into(),
+                actionable: true,
+                optional: true,
+                action: Some("Open settings"),
+                ok_label: None,
+            },
+        ]
+    }
+
+    pub fn request(id: &str) {
+        open_settings(id);
+    }
+
+    pub fn open_settings(id: &str) {
+        if let Some(h) = android_host::host() {
+            h.open_settings(id);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
 mod imp {
     use super::Permission;
     pub fn check() -> Vec<Permission> {

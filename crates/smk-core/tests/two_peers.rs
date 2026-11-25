@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use smk_core::engine::{Command, EngineHandle, StartOptions, UiPairing, UiState};
 use smk_core::input::CapturedEvent;
+use smk_core::keymap::ev;
 use smk_core::layout::{Layout, Placement};
 use smk_core::protocol::{InputEvent, Rect};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -400,4 +401,122 @@ async fn cancelling_a_download_stops_it() {
     wait_until("cancelled", || transfer_on(&b.state(), true).is_some_and(|t| t.state == TransferState::Cancelled)).await;
     let done = transfer_on(&b.state(), true).unwrap().done;
     assert!(done < size);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pointer_speed_scales_remote_motion() {
+    let tmp = Tmp::new();
+    let (a, _b, mut rb) = paired(&tmp, 25871, 25872).await;
+    for speed in [1.0, 3.0] {
+        let mut settings = a.state().settings.clone();
+        settings.pointer_speed = speed;
+        a.send(Command::SetSettings(settings));
+        wait_until("speed applied", || a.state().settings.pointer_speed == speed).await;
+        a.simulate_input(CapturedEvent::Motion { x: 1279.0, y: 300.0, dx: 5.0, dy: 0.0 });
+        let InputEvent::MouseMove { x: entry, .. } = next_event(&mut rb).await else { panic!("expected entry move") };
+        a.simulate_input(CapturedEvent::Motion { x: f64::NAN, y: f64::NAN, dx: 100.0, dy: 0.0 });
+        let InputEvent::MouseMove { x, .. } = next_event(&mut rb).await else { panic!("expected move") };
+        assert!(((x - entry) - 100.0 * speed).abs() < 1.5, "speed {speed}: moved {}", x - entry);
+        a.send(Command::ReturnHome);
+        wait_until("home", || a.state().controlling.is_none()).await;
+        while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(200), rb.recv()).await {}
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_request_is_answered_with_an_error_on_a_machine_that_is_not_a_phone() {
+    let tmp = Tmp::new();
+    let (a, b, _rb) = paired(&tmp, 25881, 25882).await;
+    a.send(Command::RequestSnapshot(Some(b.state().me.node_id)));
+    wait_until("error reaches A", || a.state().log.iter().any(|l| l.text.contains("could not take a snapshot"))).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mouse_settings_are_shared_between_paired_machines() {
+    let tmp = Tmp::new();
+    let (a, b, _rb) = paired(&tmp, 25891, 25892).await;
+
+    let mut settings = a.state().settings.clone();
+    settings.pointer_speed = 2.5;
+    settings.edge_resistance_px = 30.0;
+    a.send(Command::SetSettings(settings));
+    wait_until("B follows A", || {
+        let s = b.state().settings;
+        s.pointer_speed == 2.5 && s.edge_resistance_px == 30.0
+    })
+    .await;
+
+    // The newest edit wins in both directions, and a UI that doesn't know the
+    // version (it never sends one) can't roll it back.
+    let mut settings = b.state().settings.clone();
+    settings.pointer_speed = 0.5;
+    settings.shared_version = 0;
+    b.send(Command::SetSettings(settings));
+    wait_until("A follows B", || a.state().settings.pointer_speed == 0.5).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_alt_s_asks_for_a_phone_screenshot() {
+    let tmp = Tmp::new();
+    let (a, _b, _rb) = paired(&tmp, 25893, 25894).await;
+    for (code, down) in [(ev::LEFTCTRL, true), (ev::LEFTALT, true), (ev::S, true), (ev::S, false)] {
+        a.simulate_input(CapturedEvent::Key { code, down });
+    }
+    // Neither machine is a phone, so the request finds nobody and says so.
+    wait_until("request noticed", || a.state().log.iter().any(|l| l.text.contains("No connected phone"))).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_alt_r_asks_a_phone_to_record() {
+    let tmp = Tmp::new();
+    let (a, _b, _rb) = paired(&tmp, 25898, 25899).await;
+    for (code, down) in [(ev::LEFTCTRL, true), (ev::LEFTALT, true), (ev::R, true), (ev::R, false)] {
+        a.simulate_input(CapturedEvent::Key { code, down });
+    }
+    wait_until("record request noticed", || a.state().log.iter().any(|l| l.text.contains("Recording shortcut pressed"))).await;
+}
+
+/// `x` connects to `y` and the two pair, `y` showing the code.
+async fn pair_machines(x: &EngineHandle, y: &EngineHandle, y_port: u16, x_name: &str, y_name: &str) {
+    x.send(Command::Connect(format!("127.0.0.1:{y_port}")));
+    wait_until("connected", || {
+        peer(&x.state(), y_name).is_some_and(|p| p.connected) && peer(&y.state(), x_name).is_some_and(|p| p.connected)
+    })
+    .await;
+    let y_id = y.state().me.node_id;
+    x.send(Command::Pair(y_id));
+    let mut code = String::new();
+    wait_until("code", || match peer(&y.state(), x_name).and_then(|p| p.pairing.clone()) {
+        Some(UiPairing::ShowCode { code: c }) => {
+            code = c;
+            true
+        }
+        _ => false,
+    })
+    .await;
+    x.send(Command::SubmitCode(y_id, code));
+    wait_until("trusted", || peer(&y.state(), x_name).is_some_and(|p| p.trusted)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn machines_paired_with_the_same_peer_find_each_other() {
+    let tmp = Tmp::new();
+    let screen = Rect { x: 0.0, y: 0.0, w: 1280.0, h: 720.0 };
+    let (hub, _r1) = engine(&tmp, 25895, screen).await;
+    let (left, _r2) = engine(&tmp, 25896, screen).await;
+    let (right, _r3) = engine(&tmp, 25897, screen).await;
+    hub.send(Command::SetName("hub".into()));
+    left.send(Command::SetName("left".into()));
+    right.send(Command::SetName("right".into()));
+    wait_until("names", || hub.state().me.name == "hub" && left.state().me.name == "left" && right.state().me.name == "right").await;
+
+    pair_machines(&left, &hub, 25895, "left", "hub").await;
+    pair_machines(&right, &hub, 25895, "right", "hub").await;
+
+    // Neither knows the other's address, but the hub does and passes it on.
+    wait_until("left and right meet", || {
+        peer(&left.state(), "right").is_some_and(|p| p.connected) && peer(&right.state(), "left").is_some_and(|p| p.connected)
+    })
+    .await;
+    assert!(!peer(&left.state(), "right").unwrap().trusted, "meeting is not trusting");
 }

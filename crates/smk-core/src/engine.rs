@@ -24,7 +24,7 @@ use crate::layout::{Direction, Layout};
 use crate::net::{self, ConnId, NetEvent};
 use crate::paste::{self, PasteTarget};
 use crate::permissions::{self, Permission};
-use crate::protocol::{ClipboardData, Hello, InputEvent, Message, MouseButton, Os, Rect, PROTOCOL_VERSION};
+use crate::protocol::{ClipboardData, Hello, InputEvent, KnownPeer, Message, MouseButton, Os, Rect, PROTOCOL_VERSION};
 use crate::tls::{pairing_code, Identity};
 use crate::transfer::{self, FileOffer, LocalOffer};
 
@@ -151,7 +151,21 @@ pub enum Command {
     SetSettings(Settings),
     SetName(String),
     ReturnHome,
+    /// Share text with paired machines as if it had been copied here (the
+    /// Android clipboard can't be read while the app is in the background).
+    ShareText(String),
+    /// Start sending our input to this machine (used where there is no
+    /// physical edge to push against, e.g. a phone used as a touchpad).
+    ControlPeer(Uuid),
     RefreshPermissions,
+    /// Phone: take a screenshot and send it to this machine.
+    SendSnapshot(Uuid),
+    /// Computer: ask this phone (or, with `None`, the one being controlled or
+    /// the first connected one) for a screenshot.
+    RequestSnapshot(Option<Uuid>),
+    /// Internal: the screenshot the phone was capturing is ready.
+    #[doc(hidden)]
+    SnapshotReady(Result<Vec<u8>, String>),
     /// Download a pending incoming transfer now and put it on the clipboard.
     StartTransfer(Uuid),
     /// Download a pending incoming transfer straight into this folder.
@@ -304,6 +318,8 @@ struct Engine {
     peers: HashMap<ConnId, Peer>,
     discovered: HashMap<Uuid, Discovered>,
     dialing: HashSet<String>,
+    /// Addresses of machines a trusted peer told us about; retried until they connect.
+    learned: HashMap<Uuid, String>,
     control: Control,
     controlled_by: Option<ConnId>,
     shared: Arc<CaptureShared>,
@@ -334,6 +350,11 @@ struct Engine {
     /// The V of a paste chord from the controlling machine was swallowed.
     remote_paste_v: bool,
     transfers: Vec<Xfer>,
+    /// Machines waiting for the screenshot being captured.
+    snapshot_for: Vec<Uuid>,
+    /// The screenshot hotkey is down (ignore its repeats).
+    snapshot_key_held: bool,
+    record_key_held: bool,
     clip_ignore_until: Instant,
     clip_last_hash: Option<[u8; 32]>,
     clip_pending: Option<Instant>,
@@ -345,6 +366,12 @@ struct Engine {
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
+/// iOS offers no way to inject input: it is shown in the layout, but the
+/// cursor can never be sent to it.
+fn controllable(os: Os) -> bool {
+    os != Os::Ios
 }
 
 fn is_mac(os: Os) -> bool {
@@ -424,6 +451,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         peers: HashMap::new(),
         discovered: HashMap::new(),
         dialing: HashSet::new(),
+        learned: HashMap::new(),
         control: Control::Local,
         controlled_by: None,
         shared: Arc::new(CaptureShared::default()),
@@ -448,6 +476,9 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         paste_resolving: None,
         remote_paste_v: false,
         transfers: Vec::new(),
+        snapshot_for: Vec::new(),
+        snapshot_key_held: false,
+        record_key_held: false,
         clip_ignore_until: Instant::now(),
         clip_last_hash: None,
         clip_pending: None,
@@ -632,6 +663,46 @@ impl Engine {
         })
     }
 
+    /// The machines we are paired with (except `to`), for a trusted peer to find.
+    fn known_peers(&self, to: Uuid) -> Message {
+        Message::KnownPeers(
+            self.cfg
+                .trusted
+                .iter()
+                .filter(|t| t.node_id != to && t.node_id != self.cfg.node_id)
+                .filter_map(|t| Some(KnownPeer { node_id: t.node_id, name: t.name.clone(), addr: t.last_addr.clone()? }))
+                .collect(),
+        )
+    }
+
+    fn on_known_peers(&mut self, conn: ConnId, list: Vec<KnownPeer>) {
+        if !self.peers.get(&conn).is_some_and(|p| p.trusted) {
+            return;
+        }
+        for k in list {
+            if k.node_id == self.cfg.node_id || self.peer_by_node(k.node_id).is_some() {
+                continue;
+            }
+            if self.cfg.blocked.iter().any(|b| b.node_id == k.node_id) {
+                continue;
+            }
+            // Only the smaller id dials (see `periodic`), like for discovered machines.
+            self.learned.insert(k.node_id, k.addr.clone());
+            if self.cfg.node_id < k.node_id {
+                self.dial(k.addr);
+            }
+        }
+    }
+
+    fn shared_settings(&self) -> Message {
+        let s = &self.cfg.settings;
+        Message::SharedSettings {
+            version: s.shared_version,
+            pointer_speed: s.pointer_speed,
+            edge_resistance_px: s.edge_resistance_px,
+        }
+    }
+
     fn dial(&mut self, addr: String) {
         if !self.dialing.insert(addr.clone()) {
             return;
@@ -724,6 +795,17 @@ impl Engine {
                 self.dirty = true;
             }
             Message::Layout(l) => self.adopt_layout(l),
+            Message::KnownPeers(list) => self.on_known_peers(conn, list),
+            Message::SharedSettings { version, pointer_speed, edge_resistance_px } => {
+                let trusted = self.peers.get(&conn).is_some_and(|p| p.trusted);
+                if trusted && version > self.cfg.settings.shared_version {
+                    self.cfg.settings.shared_version = version;
+                    self.cfg.settings.pointer_speed = pointer_speed.clamp(0.1, 10.0);
+                    self.cfg.settings.edge_resistance_px = edge_resistance_px.clamp(0.0, 10_000.0);
+                    self.save();
+                    self.log("Mouse settings updated from another machine");
+                }
+            }
             Message::Enter { x, y } => {
                 // If we were controlling someone, the user is now here instead.
                 if !matches!(self.control, Control::Local) {
@@ -750,6 +832,25 @@ impl Engine {
                 self.write_clipboard(data);
             }
             Message::ClipboardFiles(offer) => self.on_remote_offer(conn, offer),
+            Message::SnapshotRequest => {
+                if let Some(node) = self.peers.get(&conn).and_then(|p| p.node_id()) {
+                    self.start_snapshot(node);
+                }
+            }
+            Message::RecordToggle => {
+                let trusted = self.peers.get(&conn).is_some_and(|p| p.trusted);
+                let started = trusted && crate::android_host::host().is_some_and(|h| h.toggle_recording());
+                if started {
+                    self.log("Screen recording toggled");
+                } else if trusted {
+                    self.log("Cannot record the screen: turn on the accessibility service");
+                }
+            }
+            Message::Snapshot(png) => self.on_snapshot(conn, png),
+            Message::SnapshotError(reason) => {
+                let name = self.peers.get(&conn).and_then(|p| p.hello.as_ref()).map(|h| h.name.clone()).unwrap_or_default();
+                self.log(format!("{name} could not take a snapshot: {reason}"));
+            }
             // Transfer frames only belong on transfer connections.
             Message::FetchFiles { .. } | Message::FileData { .. } | Message::FilesDone | Message::FilesError(_) => {}
         }
@@ -810,6 +911,7 @@ impl Engine {
         let trusted = peer.trusted;
         let name = h.name.clone();
         let layout = h.layout.clone();
+        let (node_id, os) = (h.node_id, h.os);
         // A repeated Hello (e.g. after a rename) only updates details.
         let first = peer.hello.replace(h).is_none();
         if trusted {
@@ -817,7 +919,14 @@ impl Engine {
                 self.log(format!("Connected to {name}"));
             }
             self.adopt_layout(layout);
+            // An iPhone can't be sent the cursor but belongs in the layout.
+            if os == Os::Ios && self.cfg.layout.position(node_id).is_none() && self.cfg.layout.ensure(node_id, &name) {
+                self.cfg.layout.version = now_ms().max(self.cfg.layout.version + 1);
+                self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
+            }
             self.save();
+            self.send_to(conn, self.shared_settings());
+            self.send_to(conn, self.known_peers(node_id));
         } else if first {
             self.log(format!("Found {name} (not paired)"));
         }
@@ -846,6 +955,11 @@ impl Engine {
                 targets.push(d.addr.to_string());
             } else if let Some(a) = &t.last_addr {
                 targets.push(a.clone());
+            }
+        }
+        for (id, addr) in &self.learned {
+            if !connected.contains(id) && self.cfg.node_id < *id {
+                targets.push(addr.clone());
             }
         }
         for m in &self.cfg.manual_peers {
@@ -984,6 +1098,18 @@ impl Engine {
         self.adopt_layout(h.layout);
         if self.cfg.layout.version >= layout.version {
             self.broadcast_trusted(&Message::Layout(self.cfg.layout.clone()));
+        }
+        self.send_to(conn, self.shared_settings());
+        // Everyone we trust learns about the new machine, not just the new machine.
+        self.send_known_peers();
+    }
+
+    /// Tell every trusted, connected peer which machines we are paired with.
+    fn send_known_peers(&self) {
+        for p in self.peers.values().filter(|p| p.trusted) {
+            if let Some(id) = p.node_id() {
+                p.send(self.known_peers(id));
+            }
         }
     }
 
@@ -1127,8 +1253,15 @@ impl Engine {
                 self.save();
             }
             Command::SetSettings(s) => {
+                let old = &self.cfg.settings;
+                let changed = s.pointer_speed != old.pointer_speed || s.edge_resistance_px != old.edge_resistance_px;
+                let version = if changed { now_ms().max(old.shared_version + 1) } else { old.shared_version };
                 self.cfg.settings = s;
+                self.cfg.settings.shared_version = version;
                 self.save();
+                if changed {
+                    self.broadcast_trusted(&self.shared_settings());
+                }
             }
             Command::SetName(name) => {
                 let name = name.trim().to_string();
@@ -1151,6 +1284,18 @@ impl Engine {
             Command::ReturnHome => {
                 let c = self.screen.center();
                 self.return_local(c);
+            }
+            Command::ShareText(text) => {
+                if self.cfg.settings.clipboard_enabled && !text.is_empty() {
+                    self.broadcast_clipboard(ClipboardData { text: Some(text), ..Default::default() });
+                }
+            }
+            Command::ControlPeer(node) => {
+                if let Some(rect) = self.peer_rect(node) {
+                    self.switch_to(node, rect.center());
+                } else {
+                    self.log("That machine is not connected or not paired");
+                }
             }
             Command::StartTransfer(id) => {
                 self.log("Fetching the copied files to the clipboard (requested in the control panel)");
@@ -1210,6 +1355,22 @@ impl Engine {
                 self.try_start_capture();
                 self.dirty = true;
             }
+            Command::SendSnapshot(node) => self.start_snapshot(node),
+            Command::RequestSnapshot(node) => self.request_snapshot(node),
+            Command::SnapshotReady(result) => {
+                for node in std::mem::take(&mut self.snapshot_for) {
+                    let msg = match &result {
+                        Ok(png) => Message::Snapshot(png.clone()),
+                        Err(e) => Message::SnapshotError(e.clone()),
+                    };
+                    if let Some((conn, _)) = self.peer_by_node(node) {
+                        self.send_to(conn, msg);
+                    }
+                }
+                if let Err(e) = &result {
+                    self.log(format!("Snapshot failed: {e}"));
+                }
+            }
         }
     }
 
@@ -1260,6 +1421,33 @@ impl Engine {
                 self.mods.remove(&code);
             }
         }
+        if code == ev::S && !down {
+            self.snapshot_key_held = false;
+        }
+        if code == ev::R && !down {
+            self.record_key_held = false;
+        }
+        // Ctrl+Alt+R: start or stop recording the phone's screen.
+        if down
+            && code == ev::R
+            && self.cfg.settings.hotkeys_enabled
+            && self.mods.iter().any(|c| keymap::is_ctrl(*c))
+            && self.mods.iter().any(|c| keymap::is_alt(*c))
+        {
+            self.record_hotkey();
+            return;
+        }
+        // Ctrl+Alt+S: phone screenshot (a shorter chord than Ctrl+Alt+Shift+S).
+        if down
+            && code == ev::S
+            && self.cfg.settings.hotkeys_enabled
+            && self.mods.iter().any(|c| keymap::is_ctrl(*c))
+            && self.mods.iter().any(|c| keymap::is_alt(*c))
+            && !self.mods.iter().any(|c| keymap::is_shift(*c))
+        {
+            self.snapshot_hotkey();
+            return;
+        }
         // Hotkeys: Ctrl+Alt+Shift + Arrow / Enter.
         if down && self.cfg.settings.hotkeys_enabled && self.hotkey_mods_held() {
             let dir = match code {
@@ -1271,6 +1459,10 @@ impl Engine {
             };
             if let Some(dir) = dir {
                 self.hotkey_switch(dir);
+                return;
+            }
+            if code == ev::S {
+                self.snapshot_hotkey();
                 return;
             }
             if code == ev::ENTER || code == ev::KPENTER {
@@ -1290,6 +1482,88 @@ impl Engine {
                 return;
             }
             self.send_to(conn, Message::Input(InputEvent::Key { code: out, down }));
+        }
+    }
+
+    fn start_snapshot(&mut self, node: Uuid) {
+        if !self.peer_by_node(node).is_some_and(|(_, p)| p.trusted) {
+            return;
+        }
+        let started = crate::android_host::host().is_some_and(|h| h.capture_screen());
+        if started {
+            let name = self.node_name(node);
+            self.log(format!("Taking a screenshot for {name}…"));
+            if !self.snapshot_for.contains(&node) {
+                self.snapshot_for.push(node);
+            }
+        } else if let Some((conn, _)) = self.peer_by_node(node) {
+            let reason = "turn on the accessibility service (Android 11 or newer)".to_string();
+            self.log(format!("Cannot take a snapshot: {reason}"));
+            self.send_to(conn, Message::SnapshotError(reason));
+        }
+    }
+
+    fn record_hotkey(&mut self) {
+        if !std::mem::replace(&mut self.record_key_held, true) {
+            self.log("Recording shortcut pressed");
+            self.request_from_phone(None, Message::RecordToggle, "to start or stop recording");
+        }
+    }
+
+    fn request_snapshot(&mut self, node: Option<Uuid>) {
+        self.request_from_phone(node, Message::SnapshotRequest, "for a snapshot");
+    }
+
+    fn request_from_phone(&mut self, node: Option<Uuid>, msg: Message, what: &str) {
+        let target = node.or_else(|| match self.control {
+            Control::Remote { node, os: Os::Android, .. } => Some(node),
+            _ => self
+                .peers
+                .values()
+                .filter(|p| p.trusted && p.hello.as_ref().is_some_and(|h| h.os == Os::Android))
+                .find_map(|p| p.node_id()),
+        });
+        let Some((conn, name)) = target
+            .and_then(|n| self.peer_by_node(n))
+            .filter(|(_, p)| p.trusted)
+            .map(|(c, p)| (c, p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default()))
+        else {
+            self.log("No connected phone to ask");
+            return;
+        };
+        self.send_to(conn, msg);
+        self.log(format!("Asking {name} {what}…"));
+    }
+
+    fn on_snapshot(&mut self, conn: ConnId, png: Vec<u8>) {
+        // A phone's screenshot goes to every paired computer, so it can be pasted wherever you work.
+        if self.peers.get(&conn).and_then(|p| p.hello.as_ref()).is_some_and(|h| h.os == Os::Android) {
+            for (c, p) in &self.peers {
+                if *c != conn && p.trusted && p.hello.as_ref().is_some_and(|h| matches!(h.os, Os::MacOs | Os::Windows | Os::Linux)) {
+                    p.send(Message::Snapshot(png.clone()));
+                }
+            }
+        }
+        let name = self.peers.get(&conn).and_then(|p| p.hello.as_ref()).map(|h| h.name.clone()).unwrap_or_default();
+        let dir = dirs::download_dir().unwrap_or_else(|| self.cache_root());
+        let file = dir.join(format!("Snapshot {} {}.png", name.replace(['/', '\\'], "_"), now_ms()));
+        let path = file.display().to_string();
+        let data = png.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, data)) {
+                tracing::warn!("could not save snapshot: {e}");
+            }
+        });
+        self.write_clipboard(ClipboardData { image_png: Some(png), ..Default::default() });
+        self.log(format!("Snapshot from {name} saved to {path} and copied to the clipboard"));
+    }
+
+    /// One request per press: a held key repeats, and a phone refuses
+    /// screenshots that come faster than one a second.
+    fn snapshot_hotkey(&mut self) {
+        if !std::mem::replace(&mut self.snapshot_key_held, true) {
+            self.log("Screenshot shortcut pressed");
+            self.request_snapshot(None);
         }
     }
 
@@ -1314,7 +1588,9 @@ impl Engine {
     }
 
     fn peer_rect(&self, node: Uuid) -> Option<Rect> {
-        self.peer_by_node(node).filter(|(_, p)| p.trusted).and_then(|(_, p)| p.screen)
+        self.peer_by_node(node)
+            .filter(|(_, p)| p.trusted && p.hello.as_ref().is_some_and(|h| controllable(h.os)))
+            .and_then(|(_, p)| p.screen)
     }
 
     fn on_motion(&mut self, x: f64, y: f64, dx: f64, dy: f64) {

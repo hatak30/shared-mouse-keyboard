@@ -113,6 +113,11 @@ fn dismiss_transfer(app: State<App>, id: Uuid) {
 }
 
 #[tauri::command]
+fn request_snapshot(app: State<App>, node_id: Option<Uuid>) {
+    app.engine.send(Command::RequestSnapshot(node_id));
+}
+
+#[tauri::command]
 fn return_home(app: State<App>) {
     app.engine.send(Command::ReturnHome);
 }
@@ -427,6 +432,7 @@ fn main() {
             set_settings,
             set_name,
             return_home,
+            request_snapshot,
             start_transfer,
             save_transfer_to,
             reveal_path,

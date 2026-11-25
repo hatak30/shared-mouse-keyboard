@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Shared Mouse Keyboard</string>
+    <string name="accessibility_description">Lets the computers you paired with this device tap, scroll and type on it with their mouse and keyboard. Nothing is read from the screen or sent anywhere except to your paired computers.</string>
+    <string name="channel_name">Sharing</string>
+    <string name="notification_title">Shared Mouse &amp; Keyboard</string>
+    <string name="notification_text">Sharing is running</string>
+</resources>

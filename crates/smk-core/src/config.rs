@@ -49,6 +49,9 @@ pub struct Settings {
     /// Screen size this machine reports when it cannot be detected
     /// (e.g. Linux under pure Wayland).
     pub fallback_screen: (u32, u32),
+    /// Version of the settings shared between paired machines (pointer speed
+    /// and edge resistance). The newest edit wins. Managed by the engine.
+    pub shared_version: u64,
 }
 
 impl Default for Settings {
@@ -62,6 +65,7 @@ impl Default for Settings {
             edge_resistance_px: 0.0,
             pointer_speed: 1.0,
             fallback_screen: (1920, 1080),
+            shared_version: 0,
         }
     }
 }

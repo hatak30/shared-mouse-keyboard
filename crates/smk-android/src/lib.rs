@@ -93,6 +93,10 @@ impl AndroidHost for JniHost {
         self.call(|env, obj| env.call_method(obj, "captureScreen", "()Z", &[])?.z()).unwrap_or(false)
     }
 
+    fn toggle_recording(&self) -> bool {
+        self.call(|env, obj| env.call_method(obj, "toggleRecording", "()Z", &[])?.z()).unwrap_or(false)
+    }
+
     fn open_settings(&self, id: &str) {
         self.call(|env, obj| {
             let s = env.new_string(id)?;
@@ -206,4 +210,9 @@ pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_snapshot(
         env.convert_byte_array(&png).map_err(|e| e.to_string())
     };
     embed::snapshot_ready(result);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_hatak_sharedmousekeyboard_Native_recordingReady(mut env: JNIEnv, _class: JClass, path: JString) {
+    embed::recording_ready(PathBuf::from(jstr(&mut env, &path)));
 }

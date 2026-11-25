@@ -90,6 +90,13 @@ pub fn snapshot_ready(result: Result<Vec<u8>, String>) {
     }
 }
 
+/// The app finished recording the screen: offer the video to the paired machines.
+pub fn recording_ready(path: std::path::PathBuf) {
+    if let Some(engine) = ENGINE.lock().as_ref() {
+        engine.send(Command::OfferFiles(vec![path]));
+    }
+}
+
 /// Share text with the paired machines' clipboards.
 pub fn share_text(text: String) {
     if let Some(engine) = ENGINE.lock().as_ref() {

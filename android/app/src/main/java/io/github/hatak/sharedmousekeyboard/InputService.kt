@@ -450,6 +450,37 @@ class InputService : AccessibilityService() {
         }
     }
 
+    /** Presses "Start now" on Android's screen-recording prompt so nobody has to touch the phone. */
+    fun acceptScreenCapturePrompt() {
+        val handler = Handler(Looper.getMainLooper())
+        var tries = 0
+        val poll = object : Runnable {
+            override fun run() {
+                if (clickPromptButton()) return
+                if (++tries < 40) handler.postDelayed(this, 250)
+            }
+        }
+        handler.postDelayed(poll, 600)
+    }
+
+    private fun clickPromptButton(): Boolean {
+        val labels = listOf("Start now", "Rozpocznij teraz", "Start")
+        for (window in windows) {
+            val root = window.root ?: continue
+            if (root.packageName?.toString()?.contains("systemui") != true) continue
+            for (label in labels) {
+                val button = root.findAccessibilityNodeInfosByText(label).firstOrNull { it.text?.toString().equals(label, ignoreCase = true) }
+                var node = button
+                while (node != null && !node.isClickable) node = node.parent
+                if (node != null && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    Log.i("smk", "recording: accepted the prompt with \"$label\"")
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     companion object {
         @Volatile var instance: InputService? = null
             private set

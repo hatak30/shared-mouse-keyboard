@@ -29,6 +29,11 @@ pub trait AndroidHost: Send + Sync {
     fn capture_screen(&self) -> bool {
         false
     }
+    /// Start screen recording, or stop it; the finished video is handed back
+    /// through `embed::recording_ready`. Returns false when the app cannot.
+    fn toggle_recording(&self) -> bool {
+        false
+    }
 }
 
 static HOST: OnceLock<Arc<dyn AndroidHost>> = OnceLock::new();

@@ -31,6 +31,7 @@ pub mod ev {
     pub const FN: u16 = 0x1d0;
     pub const V: u16 = 47;
     pub const S: u16 = 31;
+    pub const R: u16 = 19;
 }
 
 /// The modifier that pastes on this OS: Command on macOS, Ctrl elsewhere.

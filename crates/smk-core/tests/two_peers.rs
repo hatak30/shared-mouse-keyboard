@@ -466,6 +466,16 @@ async fn ctrl_alt_s_asks_for_a_phone_screenshot() {
     wait_until("request noticed", || a.state().log.iter().any(|l| l.text.contains("No connected phone"))).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_alt_r_asks_a_phone_to_record() {
+    let tmp = Tmp::new();
+    let (a, _b, _rb) = paired(&tmp, 25898, 25899).await;
+    for (code, down) in [(ev::LEFTCTRL, true), (ev::LEFTALT, true), (ev::R, true), (ev::R, false)] {
+        a.simulate_input(CapturedEvent::Key { code, down });
+    }
+    wait_until("record request noticed", || a.state().log.iter().any(|l| l.text.contains("Recording shortcut pressed"))).await;
+}
+
 /// `x` connects to `y` and the two pair, `y` showing the code.
 async fn pair_machines(x: &EngineHandle, y: &EngineHandle, y_port: u16, x_name: &str, y_name: &str) {
     x.send(Command::Connect(format!("127.0.0.1:{y_port}")));

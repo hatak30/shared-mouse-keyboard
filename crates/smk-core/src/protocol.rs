@@ -165,6 +165,8 @@ pub enum Message {
     SharedSettings { version: u64, pointer_speed: f64, edge_resistance_px: f64 },
     /// Addresses of the machines the sender is paired with.
     KnownPeers(Vec<KnownPeer>),
+    /// Ask a phone to start screen recording, or to stop it and offer the video.
+    RecordToggle,
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> anyhow::Result<()> {

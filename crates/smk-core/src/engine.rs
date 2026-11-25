@@ -354,6 +354,7 @@ struct Engine {
     snapshot_for: Vec<Uuid>,
     /// The screenshot hotkey is down (ignore its repeats).
     snapshot_key_held: bool,
+    record_key_held: bool,
     clip_ignore_until: Instant,
     clip_last_hash: Option<[u8; 32]>,
     clip_pending: Option<Instant>,
@@ -477,6 +478,7 @@ pub async fn start(opts: StartOptions, on_change: ChangeCallback) -> anyhow::Res
         transfers: Vec::new(),
         snapshot_for: Vec::new(),
         snapshot_key_held: false,
+        record_key_held: false,
         clip_ignore_until: Instant::now(),
         clip_last_hash: None,
         clip_pending: None,
@@ -833,6 +835,15 @@ impl Engine {
             Message::SnapshotRequest => {
                 if let Some(node) = self.peers.get(&conn).and_then(|p| p.node_id()) {
                     self.start_snapshot(node);
+                }
+            }
+            Message::RecordToggle => {
+                let trusted = self.peers.get(&conn).is_some_and(|p| p.trusted);
+                let started = trusted && crate::android_host::host().is_some_and(|h| h.toggle_recording());
+                if started {
+                    self.log("Screen recording toggled");
+                } else if trusted {
+                    self.log("Cannot record the screen: turn on the accessibility service");
                 }
             }
             Message::Snapshot(png) => self.on_snapshot(conn, png),
@@ -1413,6 +1424,19 @@ impl Engine {
         if code == ev::S && !down {
             self.snapshot_key_held = false;
         }
+        if code == ev::R && !down {
+            self.record_key_held = false;
+        }
+        // Ctrl+Alt+R: start or stop recording the phone's screen.
+        if down
+            && code == ev::R
+            && self.cfg.settings.hotkeys_enabled
+            && self.mods.iter().any(|c| keymap::is_ctrl(*c))
+            && self.mods.iter().any(|c| keymap::is_alt(*c))
+        {
+            self.record_hotkey();
+            return;
+        }
         // Ctrl+Alt+S: phone screenshot (a shorter chord than Ctrl+Alt+Shift+S).
         if down
             && code == ev::S
@@ -1479,7 +1503,18 @@ impl Engine {
         }
     }
 
+    fn record_hotkey(&mut self) {
+        if !std::mem::replace(&mut self.record_key_held, true) {
+            self.log("Recording shortcut pressed");
+            self.request_from_phone(None, Message::RecordToggle, "to start or stop recording");
+        }
+    }
+
     fn request_snapshot(&mut self, node: Option<Uuid>) {
+        self.request_from_phone(node, Message::SnapshotRequest, "for a snapshot");
+    }
+
+    fn request_from_phone(&mut self, node: Option<Uuid>, msg: Message, what: &str) {
         let target = node.or_else(|| match self.control {
             Control::Remote { node, os: Os::Android, .. } => Some(node),
             _ => self
@@ -1493,14 +1528,22 @@ impl Engine {
             .filter(|(_, p)| p.trusted)
             .map(|(c, p)| (c, p.hello.as_ref().map(|h| h.name.clone()).unwrap_or_default()))
         else {
-            self.log("No connected phone to take a snapshot from");
+            self.log("No connected phone to ask");
             return;
         };
-        self.send_to(conn, Message::SnapshotRequest);
-        self.log(format!("Asking {name} for a snapshot…"));
+        self.send_to(conn, msg);
+        self.log(format!("Asking {name} {what}…"));
     }
 
     fn on_snapshot(&mut self, conn: ConnId, png: Vec<u8>) {
+        // A phone's screenshot goes to every paired computer, so it can be pasted wherever you work.
+        if self.peers.get(&conn).and_then(|p| p.hello.as_ref()).is_some_and(|h| h.os == Os::Android) {
+            for (c, p) in &self.peers {
+                if *c != conn && p.trusted && p.hello.as_ref().is_some_and(|h| matches!(h.os, Os::MacOs | Os::Windows | Os::Linux)) {
+                    p.send(Message::Snapshot(png.clone()));
+                }
+            }
+        }
         let name = self.peers.get(&conn).and_then(|p| p.hello.as_ref()).map(|h| h.name.clone()).unwrap_or_default();
         let dir = dirs::download_dir().unwrap_or_else(|| self.cache_root());
         let file = dir.join(format!("Snapshot {} {}.png", name.replace(['/', '\\'], "_"), now_ms()));
@@ -1519,6 +1562,7 @@ impl Engine {
     /// screenshots that come faster than one a second.
     fn snapshot_hotkey(&mut self) {
         if !std::mem::replace(&mut self.snapshot_key_held, true) {
+            self.log("Screenshot shortcut pressed");
             self.request_snapshot(None);
         }
     }

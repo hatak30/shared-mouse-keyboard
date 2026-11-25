@@ -22,4 +22,7 @@ object Native {
 
     /** The screenshot asked for by [Host.captureScreen]: PNG bytes, or null with an error. */
     @JvmStatic external fun snapshot(png: ByteArray?, error: String)
+
+    /** A finished screen recording, to be offered to the paired computers. */
+    @JvmStatic external fun recordingReady(path: String)
 }
